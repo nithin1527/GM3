@@ -295,20 +295,3 @@ Avoid:
 for trajectory in trajectories:
     states = model.rollout(one_initial_state, one_control_sequence)
 ```
-
-## Running Tests
-
-From the repository root:
-
-```bash
-python3 -m unittest test_api_smoke_perf -v
-```
-
-If you use the local virtualenv created during development:
-
-```bash
-.venv/bin/python -m unittest test_api_smoke_perf -v
-```
-
-The smoke/perf tests include default presets and custom vehicle configurations.
-# GM3
