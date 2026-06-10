@@ -2,7 +2,7 @@
 
 `gm3` contains the newer GM3 implementation with a shared vehicle configuration API and two simulation backends:
 
-- `gm3.gm3.GM3`: normal NumPy implementation for deterministic simulation.
+- `gm3.gm3.GM3`: normal implementation for deterministic simulation.
 - `gm3.diffgm3.DiffGM3`: PyTorch `nn.Module` implementation for differentiable rollout and parameter training.
 
 Both backends use the same `VehicleConfig`, `TireConfig`, state layout, and control layout.
