@@ -5,13 +5,13 @@ import unittest
 
 import numpy as np
 
-from new_gm3.gm3 import GM3
-from new_gm3.shared import GM3Control, GM3State, TireConfig, VehicleConfig, make_bicycle_config, make_cart_config
+from gm3.gm3 import GM3
+from gm3.shared import GM3Control, GM3State, TireConfig, VehicleConfig, make_bicycle_config, make_cart_config
 
 try:
     import torch
 
-    from new_gm3.diffgm3 import DiffGM3
+    from gm3.diffgm3 import DiffGM3
 except ModuleNotFoundError:  # pragma: no cover - depends on local env
     torch = None
     DiffGM3 = None

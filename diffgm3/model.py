@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from new_gm3.diffgm3.vehicle import DiffGM3Vehicle
-from new_gm3.shared.types import VehicleConfig
+from gm3.diffgm3.vehicle import DiffGM3Vehicle
+from gm3.shared.types import VehicleConfig
 
 
 class DiffGM3(DiffGM3Vehicle):

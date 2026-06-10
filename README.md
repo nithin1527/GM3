@@ -1,9 +1,9 @@
-# new_gm3 API Guide
+# gm3 API Guide
 
-`new_gm3` contains the newer GM3 implementation with a shared vehicle configuration API and two simulation backends:
+`gm3` contains the newer GM3 implementation with a shared vehicle configuration API and two simulation backends:
 
-- `new_gm3.gm3.GM3`: normal NumPy implementation for deterministic simulation.
-- `new_gm3.diffgm3.DiffGM3`: PyTorch `nn.Module` implementation for differentiable rollout and parameter training.
+- `gm3.gm3.GM3`: normal NumPy implementation for deterministic simulation.
+- `gm3.diffgm3.DiffGM3`: PyTorch `nn.Module` implementation for differentiable rollout and parameter training.
 
 Both backends use the same `VehicleConfig`, `TireConfig`, state layout, and control layout.
 
@@ -36,9 +36,9 @@ Non-driven tires free-roll internally. If multiple tires are marked `driven=True
 ## Quick Start With Presets
 
 ```python
-from new_gm3.gm3 import GM3
-from new_gm3.diffgm3 import DiffGM3
-from new_gm3.shared import make_bicycle_config, make_cart_config
+from gm3.gm3 import GM3
+from gm3.diffgm3 import DiffGM3
+from gm3.shared import make_bicycle_config, make_cart_config
 
 bike_cfg = make_bicycle_config()
 cart_cfg = make_cart_config()
@@ -54,7 +54,7 @@ Use `GM3` when you do not need gradients. Use `DiffGM3` when you want PyTorch au
 Create custom vehicles with `VehicleConfig` and `TireConfig`.
 
 ```python
-from new_gm3.shared import TireConfig, VehicleConfig
+from gm3.shared import TireConfig, VehicleConfig
 
 lf = 0.6
 lr = 0.5
@@ -136,8 +136,8 @@ This supports two-wheelers, carts, trikes, front/rear/all-wheel drive layouts, d
 ## Normal GM3 Usage
 
 ```python
-from new_gm3.gm3 import GM3
-from new_gm3.shared import GM3Control, GM3State, make_bicycle_config
+from gm3.gm3 import GM3
+from gm3.shared import GM3Control, GM3State, make_bicycle_config
 
 cfg = make_bicycle_config()
 model = GM3(cfg)
@@ -184,8 +184,8 @@ print(aux["slip"])
 ```python
 import torch
 
-from new_gm3.diffgm3 import DiffGM3
-from new_gm3.shared import make_bicycle_config
+from gm3.diffgm3 import DiffGM3
+from gm3.shared import make_bicycle_config
 
 cfg = make_bicycle_config()
 model = DiffGM3(cfg, dt=0.05)
@@ -296,20 +296,18 @@ for trajectory in trajectories:
     states = model.rollout(one_initial_state, one_control_sequence)
 ```
 
-In CPU smoke tests, batching was roughly 35x faster than pre-batch sequential rollout for `B=32, T=64`.
-
 ## Running Tests
 
 From the repository root:
 
 ```bash
-python3 -m unittest tests.test_new_gm3_core new_gm3.test_api_smoke_perf -v
+python3 -m unittest test_api_smoke_perf -v
 ```
 
 If you use the local virtualenv created during development:
 
 ```bash
-.venv/bin/python -m unittest tests.test_new_gm3_core new_gm3.test_api_smoke_perf -v
+.venv/bin/python -m unittest test_api_smoke_perf -v
 ```
 
 The smoke/perf tests include default presets and custom vehicle configurations.

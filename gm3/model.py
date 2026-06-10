@@ -4,10 +4,10 @@ from typing import Any
 
 import numpy as np
 
-from new_gm3.gm3.tire import body_to_tire_velocity, brush_forces, slip
-from new_gm3.gm3.vehicle import GM3Vehicle
-from new_gm3.shared.types import ControlLike, GM3State, StateLike, VehicleConfig
-from new_gm3.shared.utils import control_from, state_from
+from gm3.gm3.tire import body_to_tire_velocity, brush_forces, slip
+from gm3.gm3.vehicle import GM3Vehicle
+from gm3.shared.types import ControlLike, GM3State, StateLike, VehicleConfig
+from gm3.shared.utils import control_from, state_from
 
 
 class GM3:

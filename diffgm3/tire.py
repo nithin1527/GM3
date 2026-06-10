@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from new_gm3.diffgm3.torch_utils import smooth_abs
-from new_gm3.shared.constants import MAX_ALPHA, MAX_KAPPA, MAX_SIGMA, MIN_KAPPA, SLIP_EPS
+from gm3.diffgm3.torch_utils import smooth_abs
+from gm3.shared.constants import MAX_ALPHA, MAX_KAPPA, MAX_SIGMA, MIN_KAPPA, SLIP_EPS
 
 
 def body_to_tire_velocities(

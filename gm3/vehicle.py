@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from new_gm3.shared.tire import tire_flag_arrays, tire_physical_arrays
-from new_gm3.shared.types import GM3State, VehicleConfig
-from new_gm3.shared.utils import tire_count_by_axle
+from gm3.shared.tire import tire_flag_arrays, tire_physical_arrays
+from gm3.shared.types import GM3State, VehicleConfig
+from gm3.shared.utils import tire_count_by_axle
 
 
 class GM3Vehicle:

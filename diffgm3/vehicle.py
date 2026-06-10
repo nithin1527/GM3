@@ -6,10 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from new_gm3.diffgm3.tire import body_to_tire_velocities, brush_forces, slip
-from new_gm3.diffgm3.torch_utils import bounded, raw_bounded, raw_positive
-from new_gm3.shared.constants import ALIGN_GAIN_BOUNDS, CONTACT_LENGTH_BOUNDS, CP_BOUNDS, MU_BOUNDS
-from new_gm3.shared.types import VehicleConfig
+from gm3.diffgm3.tire import body_to_tire_velocities, brush_forces, slip
+from gm3.diffgm3.torch_utils import bounded, raw_bounded, raw_positive
+from gm3.shared.constants import ALIGN_GAIN_BOUNDS, CONTACT_LENGTH_BOUNDS, CP_BOUNDS, MU_BOUNDS
+from gm3.shared.types import VehicleConfig
 
 
 class DiffGM3Vehicle(nn.Module):

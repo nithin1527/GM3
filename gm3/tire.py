@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from new_gm3.shared.constants import MAX_ALPHA, MAX_KAPPA, MAX_SIGMA, MIN_KAPPA, SLIP_EPS
-from new_gm3.shared.types import VehicleConfig
+from gm3.shared.constants import MAX_ALPHA, MAX_KAPPA, MAX_SIGMA, MIN_KAPPA, SLIP_EPS
+from gm3.shared.types import VehicleConfig
 
 
 def body_to_tire_velocity(
