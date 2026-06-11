@@ -149,6 +149,11 @@ class _Session:
         self.dt: float = 0.02
         self.state: torch.Tensor | None = None
         self.t: float = 0.0
+        self.control: torch.Tensor | None = None
+        self.max_drive_surface_accel: float = 0.8
+        self.max_steer_rate: float = 1.6
+        self.coast_rolling_accel: float = 0.28
+        self.coast_drag_gain: float = 0.035
 
     def configure(self, spec: ModelSpec, state: list[float] | None) -> None:
         self.model = registry.get(spec)
@@ -163,15 +168,23 @@ class _Session:
         else:
             self.state = torch.zeros(N_STATE, dtype=torch.get_default_dtype())
         self.t = 0.0
+        self.control = None
 
-    def step(self, control: list[float], n: int, return_aux: bool, slope: list[float] | None = None):
+    def step(
+        self,
+        control: list[float],
+        n: int,
+        return_aux: bool,
+        slope: list[float] | None = None,
+        coast: bool = False,
+    ):
         if self.model is None or self.state is None:
             raise ValueError("session not initialized — send an 'init' message first")
         if len(control) != N_CONTROL:
             raise ValueError(f"control must have {N_CONTROL} values [omega, delta]")
         if slope is not None and len(slope) != N_SLOPE:
             raise ValueError(f"slope must have {N_SLOPE} values [alpha_p, alpha_r]")
-        control_t = torch.tensor(control, dtype=torch.get_default_dtype())
+        control_t = self._filtered_control(torch.tensor(control, dtype=torch.get_default_dtype()), coast=coast)
         slope_t = None if slope is None else torch.tensor(slope, dtype=torch.get_default_dtype())
         aux = None
         with torch.inference_mode():
@@ -180,8 +193,48 @@ class _Session:
                     self.state, aux = self.model(self.state, control_t, self.dt, slope=slope_t, return_aux=True)
                 else:
                     self.state = self.model(self.state, control_t, self.dt, slope=slope_t)
+                if coast:
+                    self._apply_coast_resistance()
                 self.t += self.dt
         return aux
+
+    def _filtered_control(self, target: torch.Tensor, *, coast: bool) -> torch.Tensor:
+        """Rate-limit interactive WebSocket commands to avoid actuator jumps."""
+        if self.control is None:
+            self.control = torch.zeros_like(target)
+
+        drive_radius = self._drive_radius()
+        omega_rate = self.max_drive_surface_accel / max(drive_radius, 1e-6)
+        rates = target.new_tensor([omega_rate, self.max_steer_rate])
+        max_step = rates * self.dt
+        delta = torch.clamp(target - self.control, min=-max_step, max=max_step)
+        self.control = self.control + delta
+        if coast and self.state is not None:
+            self.control = self.control.clone()
+            self.control[0] = self.state[3] / max(drive_radius, 1e-6)
+        return self.control
+
+    def _apply_coast_resistance(self) -> None:
+        """Apply mild rolling/aero resistance to interactive coasting."""
+        if self.state is None:
+            return
+        vx = self.state[3]
+        speed = torch.abs(vx)
+        if float(speed) < 1e-5:
+            return
+        accel = self.coast_rolling_accel + self.coast_drag_gain * speed * speed
+        dv = torch.minimum(speed, accel * self.state.new_tensor(self.dt))
+        self.state = self.state.clone()
+        self.state[3] = vx - torch.sign(vx) * dv
+
+    def _drive_radius(self) -> float:
+        if self.model is None:
+            return 0.3
+        radii = self.model.tire_radius
+        driven = self.model.driven_mask
+        if bool(driven.any()):
+            radii = radii[driven]
+        return float(radii.mean().detach().cpu())
 
 
 @app.websocket("/ws/session")
@@ -209,6 +262,7 @@ async def ws_session(ws: WebSocket) -> None:
                         int(msg.get("n", 1)),
                         bool(msg.get("return_aux", False)),
                         msg.get("slope"),
+                        bool(msg.get("coast", False)),
                     )
                     payload = {"type": "state", "state": session.state.tolist(), "t": session.t}
                     if aux is not None:
