@@ -217,6 +217,23 @@ next_state, aux = model(initial_state, controls[0], return_aux=True)
 
 `return_aux=True` returns normal loads, steering angles, tire forces, body forces, slip, tire velocities, total forces, total moment, and physical parameters.
 
+### Sloped Surfaces
+
+`DiffGM3` accepts an optional `slope` input with body-frame surface angles `[alpha_p, alpha_r]` in radians. `alpha_p > 0` means the vehicle is climbing along body `+x`; `alpha_r > 0` means the body `+y` side is uphill. Gravity is decomposed in the surface frame: the longitudinal/lateral components enter the equations of motion and load transfer, and the normal component `g cos(alpha_p) cos(alpha_r)` scales normal loads and the lean restoring moment.
+
+```python
+import math
+
+slope = torch.tensor([[math.atan(0.10), 0.0]])   # [B, 2] -- 10% uphill grade
+
+next_state = model(initial_state, controls[0], slope=slope)
+
+# constant slope for a rollout (pass [T, B, 2] for per-step slopes)
+states = model.rollout(initial_state, controls, slopes=slope)
+```
+
+Omitting `slope` (or passing zeros) recovers the flat-ground dynamics exactly.
+
 ## Training Physical Parameters
 
 `DiffGM3` is an `nn.Module`, so train with normal PyTorch optimizers.

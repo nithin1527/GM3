@@ -15,6 +15,7 @@ from gm3.shared.constants import DEFAULT_EPS, DEFAULT_GRAVITY, DEFAULT_MIN_NORMA
 
 N_STATE = 8
 N_CONTROL = 2
+N_SLOPE = 2
 
 PresetName = Literal["bicycle", "cart"]
 
@@ -68,6 +69,12 @@ class StepRequest(BaseModel):
     model: ModelSpec
     state: list[float] = Field(min_length=N_STATE, max_length=N_STATE)
     control: list[float] = Field(min_length=N_CONTROL, max_length=N_CONTROL)
+    slope: list[float] | None = Field(
+        default=None,
+        min_length=N_SLOPE,
+        max_length=N_SLOPE,
+        description="[alpha_p, alpha_r] surface angles in radians; omit for flat ground",
+    )
     dt: float | None = Field(default=None, gt=0.0)
     return_aux: bool = False
 
@@ -81,6 +88,10 @@ class RolloutRequest(BaseModel):
     model: ModelSpec
     initial_state: list[float] = Field(min_length=N_STATE, max_length=N_STATE)
     controls: list[list[float]] = Field(min_length=1)
+    slopes: list[list[float]] | None = Field(
+        default=None,
+        description="[alpha_p, alpha_r] per step (same length as controls) or a single constant pair",
+    )
     dt: float | None = Field(default=None, gt=0.0)
 
     @model_validator(mode="after")
@@ -88,6 +99,12 @@ class RolloutRequest(BaseModel):
         for row in self.controls:
             if len(row) != N_CONTROL:
                 raise ValueError(f"each control must have {N_CONTROL} values [omega, delta]")
+        if self.slopes is not None:
+            if len(self.slopes) not in (1, len(self.controls)):
+                raise ValueError("slopes must have length 1 or match controls")
+            for row in self.slopes:
+                if len(row) != N_SLOPE:
+                    raise ValueError(f"each slope must have {N_SLOPE} values [alpha_p, alpha_r]")
         return self
 
 

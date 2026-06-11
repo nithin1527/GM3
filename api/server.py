@@ -14,7 +14,7 @@ REST:
 WebSocket /ws/session (stateful, for interactive frontends):
     -> {"type": "init", "model": {"preset": "bicycle", "dt": 0.02}, "state": [..8]}
     <- {"type": "ready", "state": [..8], "t": 0.0}
-    -> {"type": "step", "control": [omega, delta], "return_aux": false}
+    -> {"type": "step", "control": [omega, delta], "slope": [alpha_p, alpha_r], "return_aux": false}
     <- {"type": "state", "state": [..8], "t": 0.02, "aux": null}
     -> {"type": "reset", "state": [..8]}        # state optional, defaults to zeros
     <- {"type": "state", "state": [..8], "t": 0.0}
@@ -60,6 +60,7 @@ from gm3.shared.constants import CONTROL_FIELDS, STATE_FIELDS
 from gm3.api.registry import PRESET_BUILDERS, ModelRegistry, to_jsonable, vehicle_config_to_model
 from gm3.api.schemas import (
     N_CONTROL,
+    N_SLOPE,
     N_STATE,
     HealthResponse,
     ModelSpec,
@@ -112,12 +113,13 @@ def step(req: StepRequest) -> StepResponse:
 
     state = torch.tensor(req.state, dtype=torch.get_default_dtype())
     control = torch.tensor(req.control, dtype=torch.get_default_dtype())
+    slope = None if req.slope is None else torch.tensor(req.slope, dtype=torch.get_default_dtype())
 
     with torch.inference_mode():
         if req.return_aux:
-            next_state, aux = model(state, control, req.dt, return_aux=True)
+            next_state, aux = model(state, control, req.dt, slope=slope, return_aux=True)
             return StepResponse(state=next_state.tolist(), aux=to_jsonable(aux))
-        next_state = model(state, control, req.dt)
+        next_state = model(state, control, req.dt, slope=slope)
         return StepResponse(state=next_state.tolist())
 
 
@@ -131,9 +133,10 @@ def rollout(req: RolloutRequest) -> RolloutResponse:
     dtype = torch.get_default_dtype()
     initial_state = torch.tensor(req.initial_state, dtype=dtype).unsqueeze(0)  # [1, 8]
     controls = torch.tensor(req.controls, dtype=dtype).unsqueeze(1)  # [T, 1, 2]
+    slopes = None if req.slopes is None else torch.tensor(req.slopes, dtype=dtype).unsqueeze(1)  # [T|1, 1, 2]
 
     with torch.inference_mode():
-        states = model.rollout(initial_state, controls, req.dt)  # [T + 1, 1, 8]
+        states = model.rollout(initial_state, controls, req.dt, slopes=slopes)  # [T + 1, 1, 8]
 
     return RolloutResponse(states=states.squeeze(1).tolist())
 
@@ -161,19 +164,22 @@ class _Session:
             self.state = torch.zeros(N_STATE, dtype=torch.get_default_dtype())
         self.t = 0.0
 
-    def step(self, control: list[float], n: int, return_aux: bool):
+    def step(self, control: list[float], n: int, return_aux: bool, slope: list[float] | None = None):
         if self.model is None or self.state is None:
             raise ValueError("session not initialized — send an 'init' message first")
         if len(control) != N_CONTROL:
             raise ValueError(f"control must have {N_CONTROL} values [omega, delta]")
+        if slope is not None and len(slope) != N_SLOPE:
+            raise ValueError(f"slope must have {N_SLOPE} values [alpha_p, alpha_r]")
         control_t = torch.tensor(control, dtype=torch.get_default_dtype())
+        slope_t = None if slope is None else torch.tensor(slope, dtype=torch.get_default_dtype())
         aux = None
         with torch.inference_mode():
             for _ in range(max(n, 1)):
                 if return_aux:
-                    self.state, aux = self.model(self.state, control_t, self.dt, return_aux=True)
+                    self.state, aux = self.model(self.state, control_t, self.dt, slope=slope_t, return_aux=True)
                 else:
-                    self.state = self.model(self.state, control_t, self.dt)
+                    self.state = self.model(self.state, control_t, self.dt, slope=slope_t)
                 self.t += self.dt
         return aux
 
@@ -202,6 +208,7 @@ async def ws_session(ws: WebSocket) -> None:
                         msg.get("control") or [],
                         int(msg.get("n", 1)),
                         bool(msg.get("return_aux", False)),
+                        msg.get("slope"),
                     )
                     payload = {"type": "state", "state": session.state.tolist(), "t": session.t}
                     if aux is not None:

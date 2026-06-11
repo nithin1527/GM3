@@ -29,6 +29,9 @@ directory on `sys.path` (and named `gm3`) you can also use
 
 - State: `[x, y, psi, vx, vy, r, gamma, gamma_dot]`
 - Control: `[omega, delta]`
+- Slope (optional): `[alpha_p, alpha_r]` in radians — surface angles in the
+  vehicle's body frame. `alpha_p > 0` = climbing along body +x, `alpha_r > 0`
+  = the body +y side is uphill. Omit for flat ground.
 - Every request selects a vehicle via `"model"`: either
   `{"preset": "bicycle" | "cart", "dt": 0.02}` or
   `{"config": {...VehicleConfig fields...}, "dt": 0.02}`.
@@ -44,6 +47,7 @@ curl -X POST http://localhost:8731/step -H 'Content-Type: application/json' -d '
   "model": {"preset": "bicycle", "dt": 0.02},
   "state": [0, 0, 0, 2.0, 0, 0, 0, 0],
   "control": [5.7, 0.05],
+  "slope": [0.0997, 0.0],
   "return_aux": true
 }'
 
@@ -65,7 +69,7 @@ only sends a control each frame:
 ```jsonc
 // client -> server
 {"type": "init",  "model": {"preset": "bicycle", "dt": 0.02}, "state": [0,0,0,2,0,0,0,0]}
-{"type": "step",  "control": [5.7, 0.05], "return_aux": false}
+{"type": "step",  "control": [5.7, 0.05], "slope": [0.0997, 0.0], "return_aux": false}
 {"type": "reset", "state": [0,0,0,0,0,0,0,0]}   // state optional -> zeros
 
 // server -> client

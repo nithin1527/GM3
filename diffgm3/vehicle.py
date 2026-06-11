@@ -104,6 +104,7 @@ class DiffGM3Vehicle(nn.Module):
         control: torch.Tensor,
         dt: float | torch.Tensor | None = None,
         *,
+        slope: torch.Tensor | None = None,
         return_aux: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, Any]]:
         squeeze_state = state.ndim == 1
@@ -119,9 +120,12 @@ class DiffGM3Vehicle(nn.Module):
             raise ValueError(f"control must have shape [B, {self.n_control}]")
         if control.shape[0] != state.shape[0]:
             raise ValueError("state and control batch sizes must match")
+        slope = self._slope_like(slope, state)
 
         params = self.physical_parameters()
-        next_state, aux = self._step_with_params(state, control, dt, params=params, compute_aux=return_aux)
+        next_state, aux = self._step_with_params(
+            state, control, dt, params=params, compute_aux=return_aux, slope=slope
+        )
 
         if squeeze_state:
             next_state = next_state.squeeze(0)
@@ -135,6 +139,7 @@ class DiffGM3Vehicle(nn.Module):
         state: torch.Tensor,
         control: torch.Tensor,
         *,
+        slope: torch.Tensor | None = None,
         return_aux: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, Any]]:
         squeeze_state = state.ndim == 1
@@ -144,24 +149,47 @@ class DiffGM3Vehicle(nn.Module):
             control = control.unsqueeze(0)
         if control.shape[0] == 1 and state.shape[0] > 1:
             control = control.expand(state.shape[0], -1)
+        slope = self._slope_like(slope, state)
         params = self.physical_parameters()
-        derivative, aux = self._derivative_and_aux(state, control, params=params, compute_aux=return_aux)
+        derivative, aux = self._derivative_and_aux(
+            state, control, params=params, compute_aux=return_aux, slope=slope
+        )
         if squeeze_state:
             derivative = derivative.squeeze(0)
         if return_aux:
             return derivative, aux
         return derivative
 
-    def rollout(self, initial_state: torch.Tensor, controls: torch.Tensor, dt: float | torch.Tensor | None = None) -> torch.Tensor:
+    def rollout(
+        self,
+        initial_state: torch.Tensor,
+        controls: torch.Tensor,
+        dt: float | torch.Tensor | None = None,
+        slopes: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if controls.ndim != 3 or controls.shape[-1] != self.n_control:
             raise ValueError("controls must have shape [T, B, 2]")
         current = initial_state
         if current.ndim == 1:
             current = current.unsqueeze(0)
+        if slopes is not None:
+            if slopes.shape[-1] != 2:
+                raise ValueError("slopes must have 2 values per step [alpha_p, alpha_r]")
+            if slopes.ndim == 1:
+                slopes = slopes.unsqueeze(0).unsqueeze(0)
+            elif slopes.ndim == 2:
+                slopes = slopes.unsqueeze(0)
+            if slopes.shape[0] == 1:
+                slopes = slopes.expand(controls.shape[0], -1, -1)
+            if slopes.shape[0] != controls.shape[0]:
+                raise ValueError("slopes must match controls in the time dimension")
         states = [current]
         params = self.physical_parameters()
         for t in range(controls.shape[0]):
-            current, _ = self._step_with_params(current, controls[t], dt, params=params, compute_aux=False)
+            slope_t = self._slope_like(None if slopes is None else slopes[t], current)
+            current, _ = self._step_with_params(
+                current, controls[t], dt, params=params, compute_aux=False, slope=slope_t
+            )
             states.append(current)
         return torch.stack(states, dim=0)
 
@@ -173,9 +201,12 @@ class DiffGM3Vehicle(nn.Module):
         *,
         params: dict[str, torch.Tensor],
         compute_aux: bool,
+        slope: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any] | None]:
         dt_tensor = self.default_dt if dt is None else self._dt_like(dt, state)
-        derivative, aux = self._derivative_and_aux(state, control, params=params, compute_aux=compute_aux)
+        derivative, aux = self._derivative_and_aux(
+            state, control, params=params, compute_aux=compute_aux, slope=slope
+        )
         next_state = state + derivative * dt_tensor
 
         if not self.can_lean:
@@ -191,11 +222,26 @@ class DiffGM3Vehicle(nn.Module):
         *,
         params: dict[str, torch.Tensor],
         compute_aux: bool,
+        slope: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any] | None]:
         _, _, psi, vx, vy, r, gamma, gamma_dot = state.unbind(dim=-1)
         omega, delta = control.unbind(dim=-1)
 
-        normal_loads = self._normal_loads(vx, vy, r)
+        # Surface-fixed gravity decomposition. alpha_p > 0 means climbing along
+        # body +x; alpha_r > 0 means the body +y side is uphill. On flat ground
+        # g_long = g_lat = 0 and g_normal = g, recovering the original dynamics.
+        if slope is None:
+            g_long = torch.zeros_like(vx)
+            g_lat = torch.zeros_like(vx)
+            g_normal = self.gravity * torch.ones_like(vx)
+        else:
+            alpha_p, alpha_r = slope.unbind(dim=-1)
+            cos_ap = torch.cos(alpha_p)
+            g_long = self.gravity * torch.sin(alpha_p)
+            g_lat = self.gravity * torch.sin(alpha_r) * cos_ap
+            g_normal = self.gravity * cos_ap * torch.cos(alpha_r)
+
+        normal_loads = self._normal_loads(vx, vy, r, g_long=g_long, g_lat=g_lat, g_normal=g_normal)
         steering_angles = self._steering_angles(delta)
         tire_velocities = body_to_tire_velocities(
             vx=vx,
@@ -248,14 +294,17 @@ class DiffGM3Vehicle(nn.Module):
         x_dot = vx * torch.cos(psi) - vy * torch.sin(psi)
         y_dot = vx * torch.sin(psi) + vy * torch.cos(psi)
         psi_dot = r
-        ax = fx_total / self.mass + vy * r
-        ay = fy_total / self.mass - vx * r
+        ax = fx_total / self.mass + vy * r - g_long
+        ay = fy_total / self.mass - vx * r - g_lat
         r_dot = mz_total / params["yaw_inertia"] - params["yaw_damping"] * r
 
         if self.can_lean:
+            # ay already carries the lateral gravity component on a banked
+            # surface; the restoring term uses the surface-normal gravity, so
+            # the equilibrium lean satisfies tan(gamma - alpha_r) ~ v^2 / (R g).
             roll_moment = (
                 self.mass * ay * self.cg_height * torch.cos(gamma)
-                - self.mass * self.gravity * self.cg_height * torch.sin(gamma)
+                - self.mass * g_normal * self.cg_height * torch.sin(gamma)
             )
             gamma_ddot = (roll_moment - params["roll_damping"] * gamma_dot) / params["roll_inertia"]
             gamma_rate = gamma_dot
@@ -279,14 +328,26 @@ class DiffGM3Vehicle(nn.Module):
             }
         return derivative, aux
 
-    def _normal_loads(self, vx: torch.Tensor, vy: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
+    def _normal_loads(
+        self,
+        vx: torch.Tensor,
+        vy: torch.Tensor,
+        r: torch.Tensor,
+        *,
+        g_long: torch.Tensor,
+        g_lat: torch.Tensor,
+        g_normal: torch.Tensor,
+    ) -> torch.Tensor:
         wheelbase = self.wheelbase.clamp_min(self.eps)
-        ax_est = vy * r
-        ay_est = -vx * r
+        # Down-slope gravity transfers load: climbing (g_long > 0) unloads the
+        # front axle, a bank (g_lat > 0, +y uphill) loads the downhill (-y)
+        # tires (positive `lateral` subtracts from +y tires below).
+        ax_est = vy * r + g_long
+        ay_est = -vx * r + g_lat
         longitudinal = self.mass * ax_est * self.cg_height / wheelbase
 
-        front_static = self.mass * self.gravity * self.lr / wheelbase / self.front_count
-        rear_static = self.mass * self.gravity * self.lf / wheelbase / self.rear_count
+        front_static = (self.mass * g_normal * self.lr / wheelbase / self.front_count).unsqueeze(-1)
+        rear_static = (self.mass * g_normal * self.lf / wheelbase / self.rear_count).unsqueeze(-1)
 
         front_load = front_static - longitudinal.unsqueeze(-1) / self.front_count
         rear_load = rear_static + longitudinal.unsqueeze(-1) / self.rear_count
@@ -313,3 +374,18 @@ class DiffGM3Vehicle(nn.Module):
         if isinstance(dt, torch.Tensor):
             return dt.to(device=reference.device, dtype=reference.dtype)
         return reference.new_tensor(float(dt))
+
+    def _slope_like(self, slope: Any, state: torch.Tensor) -> torch.Tensor | None:
+        """Normalize a slope input to [B, 2] (alpha_p, alpha_r) or None."""
+        if slope is None:
+            return None
+        slope = torch.as_tensor(slope, dtype=state.dtype, device=state.device)
+        if slope.ndim == 1:
+            slope = slope.unsqueeze(0)
+        if slope.shape[-1] != 2:
+            raise ValueError("slope must have shape [B, 2] (alpha_p, alpha_r)")
+        if slope.shape[0] == 1 and state.shape[0] > 1:
+            slope = slope.expand(state.shape[0], -1)
+        if slope.shape[0] != state.shape[0]:
+            raise ValueError("slope and state batch sizes must match")
+        return slope
