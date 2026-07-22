@@ -56,6 +56,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from gm3.shared.constants import CONTROL_FIELDS, STATE_FIELDS
+from gm3.shared.terrain import OBSTACLE_KINDS
 
 from gm3.api.registry import PRESET_BUILDERS, ModelRegistry, to_jsonable, vehicle_config_to_model
 from gm3.api.schemas import (
@@ -117,9 +118,9 @@ def step(req: StepRequest) -> StepResponse:
 
     with torch.inference_mode():
         if req.return_aux:
-            next_state, aux = model(state, control, req.dt, slope=slope, return_aux=True)
+            next_state, aux = model(state, control, req.dt, slope=slope, obstacle=req.obstacle, return_aux=True)
             return StepResponse(state=next_state.tolist(), aux=to_jsonable(aux))
-        next_state = model(state, control, req.dt, slope=slope)
+        next_state = model(state, control, req.dt, slope=slope, obstacle=req.obstacle)
         return StepResponse(state=next_state.tolist())
 
 
@@ -136,7 +137,7 @@ def rollout(req: RolloutRequest) -> RolloutResponse:
     slopes = None if req.slopes is None else torch.tensor(req.slopes, dtype=dtype).unsqueeze(1)  # [T|1, 1, 2]
 
     with torch.inference_mode():
-        states = model.rollout(initial_state, controls, req.dt, slopes=slopes)  # [T + 1, 1, 8]
+        states = model.rollout(initial_state, controls, req.dt, slopes=slopes, obstacle=req.obstacle)  # [T + 1, 1, 8]
 
     return RolloutResponse(states=states.squeeze(1).tolist())
 
@@ -177,6 +178,7 @@ class _Session:
         return_aux: bool,
         slope: list[float] | None = None,
         coast: bool = False,
+        obstacle: str | None = None,
     ):
         if self.model is None or self.state is None:
             raise ValueError("session not initialized — send an 'init' message first")
@@ -184,15 +186,17 @@ class _Session:
             raise ValueError(f"control must have {N_CONTROL} values [omega, delta]")
         if slope is not None and len(slope) != N_SLOPE:
             raise ValueError(f"slope must have {N_SLOPE} values [alpha_p, alpha_r]")
+        if obstacle is not None and obstacle not in OBSTACLE_KINDS:
+            raise ValueError(f"obstacle must be one of {OBSTACLE_KINDS} or null")
         control_t = self._filtered_control(torch.tensor(control, dtype=torch.get_default_dtype()), coast=coast)
         slope_t = None if slope is None else torch.tensor(slope, dtype=torch.get_default_dtype())
         aux = None
         with torch.inference_mode():
             for _ in range(max(n, 1)):
                 if return_aux:
-                    self.state, aux = self.model(self.state, control_t, self.dt, slope=slope_t, return_aux=True)
+                    self.state, aux = self.model(self.state, control_t, self.dt, slope=slope_t, obstacle=obstacle, return_aux=True)
                 else:
-                    self.state = self.model(self.state, control_t, self.dt, slope=slope_t)
+                    self.state = self.model(self.state, control_t, self.dt, slope=slope_t, obstacle=obstacle)
                 if coast:
                     self._apply_coast_resistance()
                 self.t += self.dt
@@ -263,6 +267,7 @@ async def ws_session(ws: WebSocket) -> None:
                         bool(msg.get("return_aux", False)),
                         msg.get("slope"),
                         bool(msg.get("coast", False)),
+                        msg.get("obstacle"),
                     )
                     payload = {"type": "state", "state": session.state.tolist(), "t": session.t}
                     if aux is not None:

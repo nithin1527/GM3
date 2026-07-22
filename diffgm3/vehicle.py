@@ -6,9 +6,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from gm3.diffgm3.enveloping import enveloping_wheel_forces
 from gm3.diffgm3.tire import body_to_tire_velocities, brush_forces, slip
 from gm3.diffgm3.torch_utils import bounded, raw_bounded, raw_positive
 from gm3.shared.constants import ALIGN_GAIN_BOUNDS, CONTACT_LENGTH_BOUNDS, CP_BOUNDS, MU_BOUNDS
+from gm3.shared.enveloping import calibrate_enveloping
 from gm3.shared.types import VehicleConfig
 
 
@@ -72,6 +74,27 @@ class DiffGM3Vehicle(nn.Module):
         buffer("tire_y_norm", y_norm)
         buffer("tire_y_norm_row", [y_norm])
 
+        # Enveloping tire model: fit each wheel's radial-interradial springs so
+        # flat ground reproduces its static load. Obstacle forces (delta load +
+        # drag) are applied per step when an obstacle is passed to forward().
+        wheelbase_val = max(config.lf + config.lr, config.eps)
+        front_static = config.mass * config.gravity * config.lr / wheelbase_val / front_count
+        rear_static = config.mass * config.gravity * config.lf / wheelbase_val / rear_count
+        env = [
+            calibrate_enveloping(tire.radius, front_static if tire.x > 0.0 else rear_static)
+            for tire in config.tires
+        ]
+        buffer("env_c1", [e.C1 for e in env])
+        buffer("env_c2", [e.C2 for e in env])
+        buffer("env_k", [e.k for e in env])
+        buffer("env_h_axle", [e.h_axle for e in env])
+        buffer("env_flat_fz", [e.flat_fz for e in env])
+        buffer("env_sin_t", env[0].sin_t)
+        buffer("env_cos_t", env[0].cos_t)
+        n_elem = env[0].N
+        buffer("env_is_first", [i == 0 for i in range(n_elem)], bool_tensor=True)
+        buffer("env_is_last", [i == n_elem - 1 for i in range(n_elem)], bool_tensor=True)
+
         self.raw_mu = nn.Parameter(torch.stack([raw_bounded(tire.mu, *MU_BOUNDS) for tire in config.tires]))
         self.raw_cp = nn.Parameter(torch.stack([raw_bounded(tire.cp, *CP_BOUNDS) for tire in config.tires]))
         self.raw_contact_length = nn.Parameter(
@@ -105,6 +128,7 @@ class DiffGM3Vehicle(nn.Module):
         dt: float | torch.Tensor | None = None,
         *,
         slope: torch.Tensor | None = None,
+        obstacle: str | None = None,
         return_aux: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, Any]]:
         squeeze_state = state.ndim == 1
@@ -124,7 +148,7 @@ class DiffGM3Vehicle(nn.Module):
 
         params = self.physical_parameters()
         next_state, aux = self._step_with_params(
-            state, control, dt, params=params, compute_aux=return_aux, slope=slope
+            state, control, dt, params=params, compute_aux=return_aux, slope=slope, obstacle=obstacle
         )
 
         if squeeze_state:
@@ -140,6 +164,7 @@ class DiffGM3Vehicle(nn.Module):
         control: torch.Tensor,
         *,
         slope: torch.Tensor | None = None,
+        obstacle: str | None = None,
         return_aux: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, Any]]:
         squeeze_state = state.ndim == 1
@@ -152,7 +177,7 @@ class DiffGM3Vehicle(nn.Module):
         slope = self._slope_like(slope, state)
         params = self.physical_parameters()
         derivative, aux = self._derivative_and_aux(
-            state, control, params=params, compute_aux=return_aux, slope=slope
+            state, control, params=params, compute_aux=return_aux, slope=slope, obstacle=obstacle
         )
         if squeeze_state:
             derivative = derivative.squeeze(0)
@@ -166,6 +191,7 @@ class DiffGM3Vehicle(nn.Module):
         controls: torch.Tensor,
         dt: float | torch.Tensor | None = None,
         slopes: torch.Tensor | None = None,
+        obstacle: str | None = None,
     ) -> torch.Tensor:
         if controls.ndim != 3 or controls.shape[-1] != self.n_control:
             raise ValueError("controls must have shape [T, B, 2]")
@@ -188,7 +214,7 @@ class DiffGM3Vehicle(nn.Module):
         for t in range(controls.shape[0]):
             slope_t = self._slope_like(None if slopes is None else slopes[t], current)
             current, _ = self._step_with_params(
-                current, controls[t], dt, params=params, compute_aux=False, slope=slope_t
+                current, controls[t], dt, params=params, compute_aux=False, slope=slope_t, obstacle=obstacle
             )
             states.append(current)
         return torch.stack(states, dim=0)
@@ -202,10 +228,11 @@ class DiffGM3Vehicle(nn.Module):
         params: dict[str, torch.Tensor],
         compute_aux: bool,
         slope: torch.Tensor | None = None,
+        obstacle: str | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any] | None]:
         dt_tensor = self.default_dt if dt is None else self._dt_like(dt, state)
         derivative, aux = self._derivative_and_aux(
-            state, control, params=params, compute_aux=compute_aux, slope=slope
+            state, control, params=params, compute_aux=compute_aux, slope=slope, obstacle=obstacle
         )
         next_state = state + derivative * dt_tensor
 
@@ -223,8 +250,9 @@ class DiffGM3Vehicle(nn.Module):
         params: dict[str, torch.Tensor],
         compute_aux: bool,
         slope: torch.Tensor | None = None,
+        obstacle: str | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any] | None]:
-        _, _, psi, vx, vy, r, gamma, gamma_dot = state.unbind(dim=-1)
+        px, py, psi, vx, vy, r, gamma, gamma_dot = state.unbind(dim=-1)
         omega, delta = control.unbind(dim=-1)
 
         # Surface-fixed gravity decomposition. alpha_p > 0 means climbing along
@@ -242,6 +270,25 @@ class DiffGM3Vehicle(nn.Module):
             g_normal = self.gravity * cos_ap * torch.cos(alpha_r)
 
         normal_loads = self._normal_loads(vx, vy, r, g_long=g_long, g_lat=g_lat, g_normal=g_normal)
+
+        # Radial-interradial enveloping over a localized obstacle: adjust each
+        # wheel's normal load by the profile's deviation from flat (grip changes
+        # on bumps/potholes) and collect its longitudinal drag.
+        fd_total = None
+        env_delta_fz = None
+        if obstacle is not None:
+            env_delta_fz, env_fd = enveloping_wheel_forces(
+                x=px, y=py, psi=psi,
+                tire_x=self.tire_x, tire_y=self.tire_y, tire_radius=self.tire_radius,
+                sin_t=self.env_sin_t, cos_t=self.env_cos_t,
+                is_first=self.env_is_first, is_last=self.env_is_last,
+                C1=self.env_c1, C2=self.env_c2, k=self.env_k,
+                h_axle=self.env_h_axle, flat_fz=self.env_flat_fz,
+                kind=obstacle,
+            )
+            normal_loads = (normal_loads + env_delta_fz).clamp_min(self.min_normal_load)
+            fd_total = env_fd.sum(dim=-1)
+
         steering_angles = self._steering_angles(delta)
         tire_velocities = body_to_tire_velocities(
             vx=vx,
@@ -295,6 +342,11 @@ class DiffGM3Vehicle(nn.Module):
         y_dot = vx * torch.sin(psi) + vy * torch.cos(psi)
         psi_dot = r
         ax = fx_total / self.mass + vy * r - g_long
+        if fd_total is not None:
+            # Drag opposes forward motion (propulsive on an obstacle's back face);
+            # clamp to keep the integrator stable, matching the frontend.
+            lim = float(self.mass * self.gravity)
+            ax = ax - torch.clamp(fd_total, min=-lim, max=lim) / self.mass
         ay = fy_total / self.mass - vx * r - g_lat
         r_dot = mz_total / params["yaw_inertia"] - params["yaw_damping"] * r
 
@@ -326,6 +378,9 @@ class DiffGM3Vehicle(nn.Module):
                 "moment_total": mz_total,
                 "physical_parameters": params,
             }
+            if env_delta_fz is not None:
+                aux["enveloping_delta_fz"] = env_delta_fz
+                aux["enveloping_drag"] = fd_total
         return derivative, aux
 
     def _normal_loads(

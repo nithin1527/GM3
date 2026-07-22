@@ -18,6 +18,7 @@ N_CONTROL = 2
 N_SLOPE = 2
 
 PresetName = Literal["bicycle", "cart"]
+ObstacleName = Literal["speedbump", "pothole", "rough"]
 
 
 class TireConfigModel(BaseModel):
@@ -75,6 +76,10 @@ class StepRequest(BaseModel):
         max_length=N_SLOPE,
         description="[alpha_p, alpha_r] surface angles in radians; omit for flat ground",
     )
+    obstacle: ObstacleName | None = Field(
+        default=None,
+        description="active localized obstacle to envelope; omit for none",
+    )
     dt: float | None = Field(default=None, gt=0.0)
     return_aux: bool = False
 
@@ -91,6 +96,10 @@ class RolloutRequest(BaseModel):
     slopes: list[list[float]] | None = Field(
         default=None,
         description="[alpha_p, alpha_r] per step (same length as controls) or a single constant pair",
+    )
+    obstacle: ObstacleName | None = Field(
+        default=None,
+        description="active localized obstacle applied to every step; omit for none",
     )
     dt: float | None = Field(default=None, gt=0.0)
 
