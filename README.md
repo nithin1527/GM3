@@ -22,7 +22,7 @@ State has 8 values:
 - `gamma`: lean/roll angle.
 - `gamma_dot`: lean/roll angular rate.
 
-Control has 2 values:
+Control width depends on the vehicle's `drive_mode`. With the default `"single"` it has 2 values:
 
 ```text
 [omega, delta]
@@ -33,15 +33,33 @@ Control has 2 values:
 
 Non-driven tires free-roll internally. If multiple tires are marked `driven=True`, they receive the same `omega`.
 
+With `drive_mode="independent"` each driven tire gets its own speed, in tire order, so the control widens to `1 + driven_count`:
+
+```text
+[omega_0, ..., omega_k, delta]
+```
+
+This is what a skid-steer vehicle needs: it has nothing to steer, and generates yaw purely by driving its left and right sides at different speeds. Read the width off the config with `config.n_control`. No shipped preset uses it; build one with `drive_mode="independent"`.
+
+```python
+from gm3.shared import GM3Control
+
+shared = GM3Control(omega=12.0, delta=0.05)              # one speed for every driven tire
+skid = GM3Control(omega=(4.0, 8.0, 4.0, 8.0), delta=0.0) # one speed per driven tire
+```
+
+Tire contact velocities include the across-track term `-r * y`, so on a vehicle with laterally offset wheels the outer track runs faster than the inner one through a turn. Single-track presets are unaffected because their tires sit at `y = 0`; multi-track ones differ slightly from results recorded before this term existed.
+
 ## Quick Start With Presets
 
 ```python
 from gm3.gm3 import GM3
 from gm3.diffgm3 import DiffGM3
-from gm3.shared import make_bicycle_config, make_cart_config
+from gm3.shared import make_bicycle_config, make_cart_config, make_scooter_config
 
 bike_cfg = make_bicycle_config()
 cart_cfg = make_cart_config()
+scooter_cfg = make_scooter_config()   # Hiboy S2 kick scooter, single track, casters
 
 normal_model = GM3(bike_cfg)
 diff_model = DiffGM3(bike_cfg, dt=0.05)
@@ -113,6 +131,7 @@ align_gain
 yaw_damping
 roll_damping
 steering_mode: "direct" or "ackermann"
+drive_mode: "single" or "independent"
 gravity
 min_normal_load
 eps
@@ -234,6 +253,34 @@ states = model.rollout(initial_state, controls, slopes=slope)
 
 Omitting `slope` (or passing zeros) recovers the flat-ground dynamics exactly.
 
+### Obstacles And The Enveloping Tire
+
+`DiffGM3` accepts an optional `obstacle` argument naming a localized ground feature
+from `gm3.shared.terrain`: `"speedbump"` (4 cm ridge at x = 8 m), `"pothole"`
+(0.6 m wide, 10 cm deep, centered at (8, 0)), or `"rough"` (2.5 cm ripples over
+x in [6, 14]). Each wheel is discretized into radial spring elements coupled by
+interradial springs, calibrated at build time so flat ground reproduces that
+wheel's static load. Over an obstacle the model applies each wheel's load
+deviation from flat and its longitudinal drag.
+
+```python
+next_state, aux = model(initial_state, controls[0], obstacle="speedbump", return_aux=True)
+
+print(aux["enveloping_delta_fz"])      # [B, n_tires] load deviation from flat, N
+print(aux["enveloping_drag"])          # [B] summed longitudinal drag, N
+print(aux["enveloping_drag_moment"])   # [B] yaw moment from asymmetric drag, N m
+
+states = model.rollout(initial_state, controls, obstacle="pothole")
+```
+
+Drag acts at the wheel that meets the obstacle, so a one-sided hit (an offset
+pothole, an oblique bump crossing) yaws the vehicle toward that wheel. On a
+single-track vehicle, where both tires sit at `y = 0`, that moment is identically
+zero.
+
+Obstacle geometry is fixed in world coordinates, so the vehicle has to be driven
+over it. Omitting `obstacle` recovers the flat-ground dynamics exactly.
+
 ## Training Physical Parameters
 
 `DiffGM3` is an `nn.Module`, so train with normal PyTorch optimizers.
@@ -293,6 +340,24 @@ steerable/driven masks
 ```
 
 If `can_lean=False`, roll inertia and roll damping are inactive in the dynamics and will not receive useful gradients.
+
+## Calibrating From The Scooter Logs
+
+`gm3.dataset.scooter` reads the Hiboy S2 CSV logs (ODrive drive/steer, GPS,
+IMU) into rollout tensors, and `make_scooter_config` is the matching
+single-track preset. The loader applies a GPS-calibrated wheel-speed scale, the
+gyro's rest bias, an upside-down IMU sign, the front-wheel speed projection,
+the 3.75 / 10.9 steering gear ratio, a per-run steering-encoder zero and an
+accelerometer-derived surface angle, each verified by
+`experiments.scooter_report --checks`. [CALIBRATION.md](CALIBRATION.md) is the
+end-to-end workflow and what it found.
+
+```python
+from gm3.dataset.scooter import load_all, windows_of
+
+runs = load_all()                          # every moving run, recording order
+windows = windows_of(runs, horizon=45)     # 1.5 s windows at 30 Hz
+```
 
 ## Batching Guidance
 

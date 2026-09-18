@@ -1,0 +1,129 @@
+{
+  "source": "scooter_data_av_williams_lot",
+  "wheel_speed_scale": 0.545,
+  "gyro_z_bias_deg_s": -0.085,
+  "steer_ratio": 0.3440366972477064,
+  "wheel_radius_m": 0.108,
+  "files": {
+    "odrive_gps_imu_20260911_173753.csv": {
+      "rows": 1940,
+      "dropped_rows": 0,
+      "duration_s": 64.79859062399998,
+      "moving_s": 58.416368272,
+      "distance_m": 99.5894452659607,
+      "speed_max_mps": 2.4271937197327618,
+      "steer_zero_motor_deg": 0.9368666003077764,
+      "gps_fixes": 65,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.9104548509998693
+    },
+    "odrive_gps_imu_20260911_173756.csv": {
+      "rows": 290,
+      "dropped_rows": 0,
+      "duration_s": 9.658661983999991,
+      "moving_s": 0.0,
+      "distance_m": 0.0,
+      "speed_max_mps": -0.0,
+      "steer_zero_motor_deg": 0.0,
+      "gps_fixes": 10,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.0
+    },
+    "odrive_gps_imu_20260911_173858.csv": {
+      "rows": 1365,
+      "dropped_rows": 0,
+      "duration_s": 45.575348031999965,
+      "moving_s": 45.60875484799995,
+      "distance_m": 80.20948556053641,
+      "speed_max_mps": 2.260295182859898,
+      "steer_zero_motor_deg": -7.506706219421784,
+      "gps_fixes": 47,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 1.4786516680749673
+    },
+    "odrive_gps_imu_20260911_173930.csv": {
+      "rows": 1276,
+      "dropped_rows": 0,
+      "duration_s": 42.60676576000003,
+      "moving_s": 42.640178992000045,
+      "distance_m": 75.22250383148194,
+      "speed_max_mps": 2.4340449919700626,
+      "steer_zero_motor_deg": 0.9103217084439013,
+      "gps_fixes": 43,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.9334014489567264
+    },
+    "odrive_gps_imu_20260911_173958.csv": {
+      "rows": 1365,
+      "dropped_rows": 0,
+      "duration_s": 45.576281119999976,
+      "moving_s": 43.704734463999955,
+      "distance_m": 89.71584893188478,
+      "speed_max_mps": 2.6804282200455667,
+      "steer_zero_motor_deg": -7.148704817340508,
+      "gps_fixes": 47,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.8969264411395146
+    },
+    "odrive_gps_imu_20260911_174102.csv": {
+      "rows": 346,
+      "dropped_rows": 0,
+      "duration_s": 11.529639072000009,
+      "moving_s": 0.0,
+      "distance_m": 0.0,
+      "speed_max_mps": -0.0,
+      "steer_zero_motor_deg": 0.0,
+      "gps_fixes": 12,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.0
+    },
+    "odrive_gps_imu_20260911_174141.csv": {
+      "rows": 1532,
+      "dropped_rows": 0,
+      "duration_s": 51.15853750399998,
+      "moving_s": 46.647389103999984,
+      "distance_m": 81.40240657424928,
+      "speed_max_mps": 2.4526830087542537,
+      "steer_zero_motor_deg": -7.9409389816475855,
+      "gps_fixes": 52,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 1.119268157908323
+    },
+    "odrive_gps_imu_20260911_181458.csv": {
+      "rows": 52,
+      "dropped_rows": 0,
+      "duration_s": 1.704468502999589,
+      "moving_s": 0.0,
+      "distance_m": 0.0,
+      "speed_max_mps": -0.0,
+      "steer_zero_motor_deg": 0.0,
+      "gps_fixes": 3,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.0
+    },
+    "odrive_gps_imu_20260911_182515.csv": {
+      "rows": 990,
+      "dropped_rows": 0,
+      "duration_s": 33.04916478699943,
+      "moving_s": 24.96229398699961,
+      "distance_m": 47.541892874908456,
+      "speed_max_mps": 2.5494431881546977,
+      "steer_zero_motor_deg": 8.39972389445381,
+      "gps_fixes": 34,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.45217750845082716
+    },
+    "odrive_gps_imu_20260911_182613.csv": {
+      "rows": 515,
+      "dropped_rows": 0,
+      "duration_s": 17.17622236399984,
+      "moving_s": 0.0,
+      "distance_m": 0.12389860153198244,
+      "speed_max_mps": 0.3529357806220651,
+      "steer_zero_motor_deg": 0.0,
+      "gps_fixes": 16,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.0
+    }
+  }
+}

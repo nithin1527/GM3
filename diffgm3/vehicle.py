@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from gm3.diffgm3.enveloping import enveloping_wheel_forces
 from gm3.diffgm3.tire import body_to_tire_velocities, brush_forces, slip
-from gm3.diffgm3.torch_utils import bounded, raw_bounded, raw_positive
+from gm3.diffgm3.torch_utils import bounded, log_bounded, raw_bounded, raw_log_bounded, raw_positive
 from gm3.shared.constants import ALIGN_GAIN_BOUNDS, CONTACT_LENGTH_BOUNDS, CP_BOUNDS, MU_BOUNDS
 from gm3.shared.enveloping import calibrate_enveloping
 from gm3.shared.types import VehicleConfig
@@ -24,9 +24,10 @@ class DiffGM3Vehicle(nn.Module):
 
         self.config = config
         self.steering_mode = config.steering_mode
+        self.drive_mode = config.drive_mode
         self.can_lean = bool(config.can_lean)
         self.n_state = 8
-        self.n_control = 2
+        self.n_control = config.n_control
         self.n_tires = len(config.tires)
         self._has_leaning_tires = any(tire.can_lean for tire in config.tires)
 
@@ -46,6 +47,7 @@ class DiffGM3Vehicle(nn.Module):
         buffer("gravity", config.gravity)
         buffer("eps", config.eps)
         buffer("min_normal_load", config.min_normal_load)
+        buffer("rolling_resistance", config.rolling_resistance)
 
         tire_x = [tire.x for tire in config.tires]
         tire_y = [tire.y for tire in config.tires]
@@ -60,6 +62,7 @@ class DiffGM3Vehicle(nn.Module):
         buffer("driven_mask", [tire.driven for tire in config.tires], bool_tensor=True)
         buffer("lean_mask", [tire.can_lean for tire in config.tires], bool_tensor=True)
         buffer("lateral_load_mask", [abs(tire.y) > config.eps for tire in config.tires], bool_tensor=True)
+        self.register_buffer("driven_slot", torch.as_tensor(config.driven_slots, dtype=torch.long))
         buffer("front_mask_row", [[x > 0.0 for x in tire_x]], bool_tensor=True)
         buffer("steerable_mask_row", [[tire.steerable for tire in config.tires]], bool_tensor=True)
         buffer("driven_mask_row", [[tire.driven for tire in config.tires]], bool_tensor=True)
@@ -96,7 +99,7 @@ class DiffGM3Vehicle(nn.Module):
         buffer("env_is_last", [i == n_elem - 1 for i in range(n_elem)], bool_tensor=True)
 
         self.raw_mu = nn.Parameter(torch.stack([raw_bounded(tire.mu, *MU_BOUNDS) for tire in config.tires]))
-        self.raw_cp = nn.Parameter(torch.stack([raw_bounded(tire.cp, *CP_BOUNDS) for tire in config.tires]))
+        self.raw_cp = nn.Parameter(torch.stack([raw_log_bounded(tire.cp, *CP_BOUNDS) for tire in config.tires]))
         self.raw_contact_length = nn.Parameter(
             torch.stack([raw_bounded(tire.contact_length, *CONTACT_LENGTH_BOUNDS) for tire in config.tires])
         )
@@ -109,7 +112,7 @@ class DiffGM3Vehicle(nn.Module):
     def physical_parameters(self, *, detach: bool = False) -> dict[str, torch.Tensor]:
         params = {
             "mu": bounded(self.raw_mu, *MU_BOUNDS),
-            "cp": bounded(self.raw_cp, *CP_BOUNDS),
+            "cp": log_bounded(self.raw_cp, *CP_BOUNDS),
             "contact_length": bounded(self.raw_contact_length, *CONTACT_LENGTH_BOUNDS),
             "yaw_inertia": F.softplus(self.raw_yaw_inertia) + 1e-6,
             "roll_inertia": F.softplus(self.raw_roll_inertia) + 1e-6,
@@ -194,7 +197,7 @@ class DiffGM3Vehicle(nn.Module):
         obstacle: str | None = None,
     ) -> torch.Tensor:
         if controls.ndim != 3 or controls.shape[-1] != self.n_control:
-            raise ValueError("controls must have shape [T, B, 2]")
+            raise ValueError(f"controls must have shape [T, B, {self.n_control}]")
         current = initial_state
         if current.ndim == 1:
             current = current.unsqueeze(0)
@@ -253,7 +256,11 @@ class DiffGM3Vehicle(nn.Module):
         obstacle: str | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any] | None]:
         px, py, psi, vx, vy, r, gamma, gamma_dot = state.unbind(dim=-1)
-        omega, delta = control.unbind(dim=-1)
+        if control.shape[-1] != self.n_control:
+            raise ValueError(f"control must have {self.n_control} values")
+        # Layout is [omega, delta] for a shared drive and [omega_0..omega_k, delta]
+        # for an independent one, so the omega block is everything but the last column.
+        omega, delta = control[..., :-1], control[..., -1]
 
         # Surface-fixed gravity decomposition. alpha_p > 0 means climbing along
         # body +x; alpha_r > 0 means the body +y side is uphill. On flat ground
@@ -275,6 +282,7 @@ class DiffGM3Vehicle(nn.Module):
         # wheel's normal load by the profile's deviation from flat (grip changes
         # on bumps/potholes) and collect its longitudinal drag.
         fd_total = None
+        mz_drag = None
         env_delta_fz = None
         if obstacle is not None:
             env_delta_fz, env_fd = enveloping_wheel_forces(
@@ -287,7 +295,16 @@ class DiffGM3Vehicle(nn.Module):
                 kind=obstacle,
             )
             normal_loads = (normal_loads + env_delta_fz).clamp_min(self.min_normal_load)
-            fd_total = env_fd.sum(dim=-1)
+            # Clamp each wheel's drag before it is used, so both the longitudinal
+            # force and the yaw moment below stay bounded on a hard edge.
+            drag_limit = float(self.mass * self.gravity)
+            fd_wheel = torch.clamp(env_fd, min=-drag_limit, max=drag_limit)
+            fd_total = fd_wheel.sum(dim=-1)
+            # Drag acts at the wheel that meets the obstacle, so an asymmetric hit
+            # (one wheel in a pothole, an oblique bump crossing) pulls the vehicle
+            # toward it. The body force is (-fd_i, 0) at (x_i, y_i) and the sign
+            # convention here is Mz = x * Fy - y * Fx, leaving +y_i * fd_i.
+            mz_drag = (self.tire_y_row * fd_wheel).sum(dim=-1)
 
         steering_angles = self._steering_angles(delta)
         tire_velocities = body_to_tire_velocities(
@@ -295,13 +312,17 @@ class DiffGM3Vehicle(nn.Module):
             vy=vy,
             yaw_rate=r,
             tire_x=self.tire_x,
+            tire_y=self.tire_y,
             steering_angles=steering_angles,
         )
         vx_tire = tire_velocities[..., 0]
         vy_tire = tire_velocities[..., 1]
 
         free_roll_omega = vx_tire / self.tire_radius.clamp_min(self.eps)
-        omega_tire = torch.where(self.driven_mask_row, omega.unsqueeze(-1), free_roll_omega)
+        # driven_slot is all zeros for a shared drive, so this indexes the single
+        # omega column back onto every driven tire and costs nothing extra.
+        omega_by_tire = omega[..., self.driven_slot]
+        omega_tire = torch.where(self.driven_mask_row, omega_by_tire, free_roll_omega)
 
         sigma_x, sigma_y, kappa, alpha = slip(
             vx_tire=vx_tire,
@@ -328,6 +349,10 @@ class DiffGM3Vehicle(nn.Module):
             contact_length=params["contact_length"],
         )
 
+        # Rolling resistance opposes each tire's rolling direction; tanh keeps
+        # it smooth through zero speed so a stopped vehicle is not pushed back.
+        fx_tire = fx_tire - self.rolling_resistance * normal_loads * torch.tanh(vx_tire / 0.1)
+
         cos_delta = torch.cos(steering_angles)
         sin_delta = torch.sin(steering_angles)
         fx_body = fx_tire * cos_delta - fy_tire * sin_delta
@@ -337,6 +362,8 @@ class DiffGM3Vehicle(nn.Module):
         fx_total = fx_body.sum(dim=-1)
         fy_total = fy_body.sum(dim=-1)
         mz_total = mz_body.sum(dim=-1)
+        if mz_drag is not None:
+            mz_total = mz_total + mz_drag
 
         x_dot = vx * torch.cos(psi) - vy * torch.sin(psi)
         y_dot = vx * torch.sin(psi) + vy * torch.cos(psi)
@@ -381,6 +408,7 @@ class DiffGM3Vehicle(nn.Module):
             if env_delta_fz is not None:
                 aux["enveloping_delta_fz"] = env_delta_fz
                 aux["enveloping_drag"] = fd_total
+                aux["enveloping_drag_moment"] = mz_drag
         return derivative, aux
 
     def _normal_loads(

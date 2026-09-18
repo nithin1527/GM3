@@ -26,6 +26,9 @@ class GM3Vehicle:
         self.driven = flags["driven"]
         self.can_lean = flags["can_lean"]
 
+        self.driven_slot = np.array(config.driven_slots, dtype=int)
+        self.drive_inputs = config.n_control - 1
+
         self.front = self.tire_x > 0.0
         self.rear = ~self.front
         self.front_count, self.rear_count = tire_count_by_axle(self.tire_x)

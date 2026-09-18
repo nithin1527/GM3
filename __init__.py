@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from gm3.gm3 import GM3
-from gm3.shared import GM3Control, GM3State, TireConfig, VehicleConfig, make_bicycle_config, make_cart_config
+from gm3.shared import (
+    GM3Control,
+    GM3State,
+    TireConfig,
+    VehicleConfig,
+    make_bicycle_config,
+    make_cart_config,
+)
 
 __all__ = [
     "DiffGM3",

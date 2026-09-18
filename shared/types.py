@@ -9,6 +9,7 @@ from .constants import CONTROL_FIELDS, DEFAULT_EPS, DEFAULT_GRAVITY, DEFAULT_MIN
 
 
 SteeringMode = Literal["direct", "ackermann"]
+DriveMode = Literal["single", "independent"]
 
 
 @dataclass(frozen=True)
@@ -39,19 +40,47 @@ class GM3State:
 
 @dataclass(frozen=True)
 class GM3Control:
-    """Canonical GM3 control: wheel angular velocity and steering angle."""
+    """Canonical GM3 control: wheel angular velocity and steering angle.
 
-    omega: float
+    ``omega`` is one speed shared by every driven tire. A vehicle configured
+    with ``drive_mode="independent"`` instead takes one speed per driven tire,
+    in tire order, so the flat layout widens to ``[omega_0, ..., omega_k, delta]``.
+    """
+
+    omega: float | tuple[float, ...]
     delta: float
 
+    def __post_init__(self) -> None:
+        if np.ndim(self.omega) == 0:
+            object.__setattr__(self, "omega", float(self.omega))
+        else:
+            object.__setattr__(self, "omega", tuple(float(w) for w in self.omega))
+            if not self.omega:
+                raise ValueError("omega must hold at least one wheel speed")
+
+    @property
+    def omegas(self) -> tuple[float, ...]:
+        """Wheel speeds exactly as supplied, without broadcasting."""
+        return (self.omega,) if isinstance(self.omega, float) else self.omega
+
+    def wheel_omegas(self, count: int) -> tuple[float, ...]:
+        """Broadcast to one speed per drive input, sharing a single speed."""
+        omegas = self.omegas
+        if len(omegas) == 1:
+            return omegas * count
+        if len(omegas) != count:
+            raise ValueError(f"GM3Control carries {len(omegas)} wheel speeds, expected {count}")
+        return omegas
+
     def as_array(self) -> np.ndarray:
-        return np.array([self.omega, self.delta], dtype=float)
+        return np.array([*self.omegas, self.delta], dtype=float)
 
     @classmethod
     def from_array(cls, values: Sequence[float]) -> "GM3Control":
-        if len(values) != len(CONTROL_FIELDS):
-            raise ValueError(f"GM3Control requires {len(CONTROL_FIELDS)} values, got {len(values)}")
-        return cls(float(values[0]), float(values[1]))
+        if len(values) < len(CONTROL_FIELDS):
+            raise ValueError(f"GM3Control requires at least {len(CONTROL_FIELDS)} values, got {len(values)}")
+        omegas = tuple(float(v) for v in values[:-1])
+        return cls(omegas[0] if len(omegas) == 1 else omegas, float(values[-1]))
 
 
 @dataclass(frozen=True)
@@ -94,9 +123,13 @@ class VehicleConfig:
     yaw_damping: float = 2.0
     roll_damping: float = 15.0
     steering_mode: SteeringMode = "ackermann"
+    drive_mode: DriveMode = "single"
     gravity: float = DEFAULT_GRAVITY
     min_normal_load: float = DEFAULT_MIN_NORMAL_LOAD
     eps: float = DEFAULT_EPS
+    #: Rolling-resistance coefficient: each tire pushes back ``-c * Fz`` along
+    #: its rolling direction. Zero (the default) leaves the original dynamics.
+    rolling_resistance: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tires", tuple(self.tires))
@@ -114,8 +147,14 @@ class VehicleConfig:
             raise ValueError("width must be non-negative")
         if self.cg_height < 0.0:
             raise ValueError("cg_height must be non-negative")
+        if self.rolling_resistance < 0.0:
+            raise ValueError("rolling_resistance must be non-negative")
         if self.steering_mode not in ("direct", "ackermann"):
             raise ValueError("steering_mode must be 'direct' or 'ackermann'")
+        if self.drive_mode not in ("single", "independent"):
+            raise ValueError("drive_mode must be 'single' or 'independent'")
+        if self.drive_mode == "independent" and self.driven_count == 0:
+            raise ValueError("drive_mode 'independent' requires at least one driven tire")
         for tire in self.tires:
             if tire.radius <= 0.0:
                 raise ValueError("tire radius must be positive")
@@ -125,6 +164,32 @@ class VehicleConfig:
     @property
     def wheelbase(self) -> float:
         return self.lf + self.lr
+
+    @property
+    def driven_count(self) -> int:
+        return sum(1 for tire in self.tires if tire.driven)
+
+    @property
+    def n_control(self) -> int:
+        """Control width: 2 for a shared drive, 1 + driven_count for an independent one."""
+        return 2 if self.drive_mode == "single" else 1 + self.driven_count
+
+    @property
+    def driven_slots(self) -> tuple[int, ...]:
+        """Per-tire index into the control's omega block; 0 for a shared drive.
+
+        Skid-steer vehicles steer by driving each side at a different speed, so
+        every driven tire needs its own slot. Free-rolling tires get slot 0 and
+        are masked out downstream.
+        """
+        if self.drive_mode == "single":
+            return (0,) * len(self.tires)
+        slots: list[int] = []
+        rank = 0
+        for tire in self.tires:
+            slots.append(rank if tire.driven else 0)
+            rank += int(tire.driven)
+        return tuple(slots)
 
     @property
     def effective_roll_inertia(self) -> float:
