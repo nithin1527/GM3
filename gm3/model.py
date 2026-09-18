@@ -112,6 +112,7 @@ class GM3:
 
         normal_loads = vehicle.normal_loads(state)
         steering_angles = vehicle.steering_angles(control.delta)
+        omegas = control.wheel_omegas(vehicle.drive_inputs)
 
         fx_tire = np.zeros(n_tires, dtype=float)
         fy_tire = np.zeros(n_tires, dtype=float)
@@ -129,11 +130,15 @@ class GM3:
                 vy=state.vy,
                 yaw_rate=state.r,
                 tire_x=vehicle.tire_x[i],
+                tire_y=vehicle.tire_y[i],
                 steering_angle=steering_angles[i],
             )
             vx_tire[i] = vx_i
             vy_tire[i] = vy_i
-            omega_i = control.omega if vehicle.driven[i] else vx_i / max(vehicle.tire_radius[i], self.config.eps)
+            if vehicle.driven[i]:
+                omega_i = omegas[vehicle.driven_slot[i]]
+            else:
+                omega_i = vx_i / max(vehicle.tire_radius[i], self.config.eps)
 
             slip_values = slip(
                 vx_tire=vx_i,
@@ -164,6 +169,9 @@ class GM3:
             fx_tire[i] = force_values["fx"]
             fy_tire[i] = force_values["fy"]
             mz_tire[i] = force_values["mz"]
+
+        # Rolling resistance opposes each tire's rolling direction (matches DiffGM3).
+        fx_tire = fx_tire - self.config.rolling_resistance * normal_loads * np.tanh(vx_tire / 0.1)
 
         aggregate = vehicle.aggregate_body_forces(
             steering_angles=steering_angles,

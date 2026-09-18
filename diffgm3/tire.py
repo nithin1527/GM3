@@ -12,9 +12,13 @@ def body_to_tire_velocities(
     vy: torch.Tensor,
     yaw_rate: torch.Tensor,
     tire_x: torch.Tensor,
+    tire_y: torch.Tensor,
     steering_angles: torch.Tensor,
 ) -> torch.Tensor:
-    vx_point = vx.unsqueeze(-1)
+    # Rigid-body contact point velocity: v + omega x r, with omega = r * z_hat,
+    # so the yaw rate speeds up the outer track and slows the inner one. That
+    # across-track difference is what lets a skid-steer vehicle turn at all.
+    vx_point = vx.unsqueeze(-1) - yaw_rate.unsqueeze(-1) * tire_y.unsqueeze(0)
     vy_point = vy.unsqueeze(-1) + yaw_rate.unsqueeze(-1) * tire_x.unsqueeze(0)
     cos_delta = torch.cos(steering_angles)
     sin_delta = torch.sin(steering_angles)
@@ -87,7 +91,16 @@ def brush_forces(
 
     force_adhesion = mu * normal_loads * t * (3.0 - 3.0 * t + t.square())
     force_sliding = mu * normal_loads
-    gate = torch.sigmoid(20.0 * (sigma - sigma_sliding))
+    # Smooth stand-in for the frontend's hard adhesion/sliding switch. It is
+    # rebased so the gate is exactly zero at zero slip: a plain sigmoid leaks
+    # sigmoid(-20 * sigma_sliding) of mu * Fz there, and that residual force,
+    # pointed along sigma / |sigma|, is a Coulomb discontinuity softened only
+    # at eps. Its linearized stiffness (~1e6 N per unit slip for a tire with
+    # theta ~ 4) is invisible in a forward rollout but makes backprop through
+    # Euler grow by orders of magnitude per step on straight driving.
+    gate_raw = torch.sigmoid(20.0 * (sigma - sigma_sliding))
+    gate_zero = torch.sigmoid(-20.0 * sigma_sliding)
+    gate = (gate_raw - gate_zero) / (1.0 - gate_zero)
     force_total = (1.0 - gate) * force_adhesion + gate * force_sliding
 
     fx = -force_total * sigma_x / sigma

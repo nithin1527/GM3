@@ -1,0 +1,129 @@
+{
+  "source": "scooter_data_kim_quad",
+  "wheel_speed_scale": 0.545,
+  "gyro_z_bias_deg_s": -0.085,
+  "steer_ratio": 0.3440366972477064,
+  "wheel_radius_m": 0.108,
+  "files": {
+    "odrive_gps_imu_20260911_162125.csv": {
+      "rows": 2426,
+      "dropped_rows": 0,
+      "duration_s": 81.02439206400004,
+      "moving_s": 80.52324155200006,
+      "distance_m": 121.24313834609987,
+      "speed_max_mps": 2.313808163762093,
+      "steer_zero_motor_deg": -14.414948567621076,
+      "gps_fixes": 82,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.9112776488351496
+    },
+    "odrive_gps_imu_20260911_162516.csv": {
+      "rows": 1714,
+      "dropped_rows": 0,
+      "duration_s": 57.23975353600008,
+      "moving_s": 27.332115712000018,
+      "distance_m": 38.32072663879396,
+      "speed_max_mps": 1.9490667022228243,
+      "steer_zero_motor_deg": -11.501132861922137,
+      "gps_fixes": 58,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.5861984909555439
+    },
+    "odrive_gps_imu_20260911_162644.csv": {
+      "rows": 1911,
+      "dropped_rows": 0,
+      "duration_s": 63.822445344000016,
+      "moving_s": 58.94396278399995,
+      "distance_m": 90.15705327606202,
+      "speed_max_mps": 2.1950732500672347,
+      "steer_zero_motor_deg": -10.703823444536338,
+      "gps_fixes": 64,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.8545510392827028
+    },
+    "odrive_gps_imu_20260911_162832.csv": {
+      "rows": 669,
+      "dropped_rows": 0,
+      "duration_s": 22.319224480000003,
+      "moving_s": 21.35030372799997,
+      "distance_m": 35.10565192108155,
+      "speed_max_mps": 2.2286551115393642,
+      "steer_zero_motor_deg": -10.756950634375201,
+      "gps_fixes": 23,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.8100783305330365
+    },
+    "odrive_gps_imu_20260911_163011.csv": {
+      "rows": 185,
+      "dropped_rows": 0,
+      "duration_s": 6.149352575999956,
+      "moving_s": 0.0,
+      "distance_m": 0.016998318481445316,
+      "speed_max_mps": 0.3529357806220651,
+      "steer_zero_motor_deg": 0.0,
+      "gps_fixes": 7,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.0
+    },
+    "odrive_gps_imu_20260911_163031.csv": {
+      "rows": 1187,
+      "dropped_rows": 0,
+      "duration_s": 39.628822879999916,
+      "moving_s": 39.19449561599981,
+      "distance_m": 69.16315015563966,
+      "speed_max_mps": 2.789828192985058,
+      "steer_zero_motor_deg": -13.220331010078132,
+      "gps_fixes": 40,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.9541048927437151
+    },
+    "odrive_gps_imu_20260911_163129.csv": {
+      "rows": 1010,
+      "dropped_rows": 0,
+      "duration_s": 33.720540863999986,
+      "moving_s": 31.21420179200004,
+      "distance_m": 63.0860462249756,
+      "speed_max_mps": 2.9976839404106146,
+      "steer_zero_motor_deg": -12.404324999580037,
+      "gps_fixes": 34,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.924838178668325
+    },
+    "odrive_gps_imu_20260911_163418.csv": {
+      "rows": 2308,
+      "dropped_rows": 0,
+      "duration_s": 77.09239148799998,
+      "moving_s": 59.080911632000266,
+      "distance_m": 106.00347364196779,
+      "speed_max_mps": 2.5670045688152316,
+      "steer_zero_motor_deg": -12.897248106507451,
+      "gps_fixes": 77,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 0.8808421534149672
+    },
+    "odrive_gps_imu_20260911_163556.csv": {
+      "rows": 1794,
+      "dropped_rows": 0,
+      "duration_s": 59.92348819200015,
+      "moving_s": 59.95690454400028,
+      "distance_m": 108.00180143127443,
+      "speed_max_mps": 2.392130949544907,
+      "steer_zero_motor_deg": 72.39231916929252,
+      "gps_fixes": 60,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 1.1051303071925374
+    },
+    "odrive_gps_imu_20260911_163726.csv": {
+      "rows": 1535,
+      "dropped_rows": 0,
+      "duration_s": 51.26131033599995,
+      "moving_s": 51.29472628799999,
+      "distance_m": 83.46493377685547,
+      "speed_max_mps": 2.0438023143887523,
+      "steer_zero_motor_deg": 70.16051810883113,
+      "gps_fixes": 52,
+      "motor_current_max_A": 0.0,
+      "grade_std_deg": 1.154821601543613
+    }
+  }
+}

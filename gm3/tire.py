@@ -12,9 +12,11 @@ def body_to_tire_velocity(
     vy: float,
     yaw_rate: float,
     tire_x: float,
+    tire_y: float,
     steering_angle: float,
 ) -> tuple[float, float]:
-    vx_point = vx
+    # Rigid-body contact point velocity: v + omega x r, with omega = r * z_hat.
+    vx_point = vx - yaw_rate * tire_y
     vy_point = vy + yaw_rate * tire_x
     cos_delta = np.cos(steering_angle)
     sin_delta = np.sin(steering_angle)
