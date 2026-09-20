@@ -27,6 +27,13 @@ package if it is not already importable under that name.
   on / off, coasting windows only) against a constant-speed bicycle.
   `--slope {imu,plane,none}` picks the surface-angle source, `--motor-on`
   treats the wheel speed as a drive input.
+- `scooter_tire_models.py` - one calibration per tire law (`brush`, `fiala`,
+  `dugoff`, `burckhardt`, `pacejka`) on all three corrected folders pooled,
+  with `scooter_calibrate`'s protocol: `fit` (last run of each surface held
+  out), `fit --all-data` (the reported parameters), `fit --all-data --free all`
+  (friction and shape freed too), `profile` (loss along the stiffness axis) and
+  `report` (parameter and accuracy tables, `out/tire_models/report.md`).
+  `scooter_calibrate --tire-model` runs the single-folder workflow on any law.
 - `scooter_plots.py` - renders the fitted GM3 against the kinematic bicycle on
   every run (paths vs GPS with the start marked, held-out yaw rate and heading
   error, per-run error bars, residual by steering angle) into `out/plots/`.

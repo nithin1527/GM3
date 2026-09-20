@@ -67,7 +67,16 @@ TRAINABLE = {
     "contact_length": "gm3.raw_contact_length", "cp": "gm3.raw_cp", "mu": "gm3.raw_mu",
     "yaw_inertia": "gm3.raw_yaw_inertia", "yaw_damping": "gm3.raw_yaw_damping",
     "align_gain": "gm3.raw_align_gain", "steer_zero": "steer_zero", "steer_ratio": "log_steer_ratio",
+    # --tire-model other than brush (gm3.diffgm3.tire_models). "cy" is the cornering
+    # stiffness of fiala / dugoff / pacejka; Burckhardt has none, its zero-slip slope
+    # is (c1 c2 - c3) Fz, so "burckhardt_c2" frees the exponent alone (the analogue of
+    # freeing stiffness with friction held) and "burckhardt_y" all of (c1, c2, c3).
+    "cx": "gm3.tire_model.raw_cx", "cy": "gm3.tire_model.raw_cy",
+    "shape_y": "gm3.tire_model.raw_shape_y", "curvature_y": "gm3.tire_model.raw_curvature_y",
+    "burckhardt_c2": "gm3.tire_model.log_coefficients_y", "burckhardt_y": "gm3.tire_model.log_coefficients_y",
 }
+GRADIENT_MASKS = {"burckhardt_c2": (0.0, 1.0, 0.0)}
+TIRE_FIT = {"brush": "cp", "fiala": "cy", "dugoff": "cy", "pacejka": "cy", "burckhardt": "burckhardt_c2"}
 DEFAULT_FIT = ["cp", "yaw_inertia", "yaw_damping", "steer_zero"]
 OUT = Path(__file__).resolve().parent / "out"
 
@@ -75,9 +84,11 @@ OUT = Path(__file__).resolve().parent / "out"
 class ScooterModel(nn.Module):
     """DiffGM3 plus the steering-input map, so the zero and ratio are trainable."""
 
-    def __init__(self, dt: float, steer_ratio: float = STEER_RATIO, motor_on: bool = False):
+    def __init__(self, dt: float, steer_ratio: float = STEER_RATIO, motor_on: bool = False,
+                 tire_model: str = "brush", **tire_options):
         super().__init__()
-        self.gm3 = DiffGM3(make_scooter_config(motor_on=motor_on), dt=dt)
+        self.gm3 = DiffGM3(make_scooter_config(motor_on=motor_on), dt=dt, tire_model=tire_model, **tire_options)
+        self.tire_model = self.gm3.tire_model.name
         self.steer_zero = nn.Parameter(torch.tensor(0.0))
         self.log_steer_ratio = nn.Parameter(torch.log(torch.tensor(steer_ratio)))
 
@@ -100,20 +111,28 @@ class ScooterModel(nn.Module):
         ``h * lambda <= 1`` for the current parameters and the slowest sample.
         """
         values = self.gm3.physical_parameters(detach=True)
-        stiffness = 2.0 * values["cp"] * values["contact_length"] ** 2
-        x = torch.tensor([tire.x for tire in self.gm3.config.tires])
+        if self.tire_model == "brush":
+            stiffness = 2.0 * values["cp"] * values["contact_length"] ** 2
+        else:
+            stiffness = self.gm3.cornering_stiffness().detach()
+        x = torch.tensor([tire.x for tire in self.gm3.config.tires], device=stiffness.device)
         rate = max(float((stiffness * x ** 2).sum() / values["yaw_inertia"]),
                    float(stiffness.sum()) / self.gm3.config.mass) / max(v_min, 0.2)
         return int(min(max(math.ceil(rate * float(self.gm3.default_dt)), 1), 200))
 
+    @property
+    def device(self) -> torch.device:
+        return self.steer_zero.device
+
     def simulate(self, windows: RolloutWindows, *, pin_vx: bool, keep=None,
                  substeps: int | None = None, use_slope: bool = True) -> torch.Tensor:
-        target = torch.as_tensor(windows.target_states)
-        raw = torch.as_tensor(windows.controls)
+        device = self.device
+        target = torch.as_tensor(windows.target_states).to(device)
+        raw = torch.as_tensor(windows.controls).to(device)
         if keep is not None:
             target, raw = target[:, keep], raw[:, keep]
         controls = self.controls(raw)
-        slopes = torch.as_tensor(windows.slopes)
+        slopes = torch.as_tensor(windows.slopes).to(device)
         if not use_slope:
             slopes = torch.zeros_like(slopes)
         if keep is not None:
@@ -133,9 +152,23 @@ class ScooterModel(nn.Module):
 
     def values(self) -> dict[str, float]:
         physical = self.gm3.physical_parameters(detach=True)
-        out = {name: float(value.flatten()[0]) for name, value in physical.items()}
+        out = {}
+        for name, value in physical.items():
+            if not isinstance(value, torch.Tensor):
+                out[name] = float(value)
+            elif "coefficients" in name:
+                out.update({f"{name}.c{k + 1}": float(c) for k, c in enumerate(value)})
+            else:
+                out[name] = float(value.flatten()[0])
         out["cp_rear"] = float(physical["cp"][1])
         out["contact_length_rear"] = float(physical["contact_length"][1])
+        # Zero-slip cornering stiffness: 2 cp a^2 for the brush (the adhesion term the
+        # brush fits have always reported), read off the law itself for the others.
+        if self.tire_model == "brush":
+            stiffness = 2.0 * physical["cp"] * physical["contact_length"] ** 2
+        else:
+            stiffness = self.gm3.cornering_stiffness().detach()
+        out["C_alpha"], out["C_alpha_rear"] = float(stiffness[0]), float(stiffness[1])
         out["steer_zero_deg"] = math.degrees(float(self.steer_zero.detach()))
         out["steer_ratio"] = float(self.steer_ratio.detach())
         return out
@@ -151,13 +184,15 @@ def yaw_loss(simulated: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
 def loss_on(model: ScooterModel, windows: RolloutWindows, pin_vx: bool, keep=None,
             substeps: int | None = None) -> torch.Tensor:
-    target = torch.as_tensor(windows.target_states)
+    target = torch.as_tensor(windows.target_states).to(model.device)
     if keep is not None:
         target = target[:, keep]
     return yaw_loss(model.simulate(windows, pin_vx=pin_vx, keep=keep, substeps=substeps), target)
 
 
-TIRE_PARAMETERS = ("gm3.raw_cp", "gm3.raw_contact_length", "gm3.raw_mu")
+TIRE_PARAMETERS = ("gm3.raw_cp", "gm3.raw_contact_length", "gm3.raw_mu",
+                   "gm3.tire_model.raw_cx", "gm3.tire_model.raw_cy",
+                   "gm3.tire_model.raw_shape_y", "gm3.tire_model.raw_curvature_y")
 
 
 def fit(model: ScooterModel, windows: RolloutWindows, names, steps: int, lr: float, *,
@@ -176,6 +211,10 @@ def fit(model: ScooterModel, windows: RolloutWindows, names, steps: int, lr: flo
     parameters; a per-call count would jump as stiffness changes.
     """
     freed = {TRAINABLE[n] for n in names}
+    masks = {TRAINABLE[n]: torch.tensor(GRADIENT_MASKS[n]) for n in names if n in GRADIENT_MASKS}
+    missing = freed - {name for name, _ in model.named_parameters()}
+    if missing:
+        raise ValueError(f"the {model.tire_model!r} tire has no parameter {sorted(missing)}")
     target = windows.target_states if keep is None else windows.target_states[:, keep]
     substeps = 3 * model.stable_substeps(float(target[..., 3].min()))
     groups = []
@@ -195,6 +234,9 @@ def fit(model: ScooterModel, windows: RolloutWindows, names, steps: int, lr: flo
             for name, parameter in model.named_parameters():
                 if name in TIRE_PARAMETERS and parameter.grad is not None:
                     parameter.grad[:] = parameter.grad.sum()
+        for name, parameter in model.named_parameters():
+            if name in masks and parameter.grad is not None:
+                parameter.grad.mul_(masks[name])
         torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 10.0)
         optimizer.step()
         if not quiet and (step % max(steps // 5, 1) == 0 or step == steps - 1):
@@ -205,7 +247,7 @@ def fit(model: ScooterModel, windows: RolloutWindows, names, steps: int, lr: flo
 
 
 def cornering_stiffness(values: dict[str, float]) -> float:
-    return 2.0 * values["cp"] * values["contact_length"] ** 2
+    return values["C_alpha"]
 
 
 def kinematic_trace(windows: RolloutWindows, wheelbase: float, ratio: float = STEER_RATIO,
@@ -307,7 +349,7 @@ def gps_table(models: dict[str, ScooterModel | None], runs: list[ScooterRun], wh
             trace = kinematic_trace(windows, wheelbase)
         else:
             with torch.no_grad():
-                trace = model.simulate(windows, pin_vx=name not in open_loop, use_slope=name not in no_slope).numpy()
+                trace = model.simulate(windows, pin_vx=name not in open_loop, use_slope=name not in no_slope).cpu().numpy()
         out[name] = [gps_errors(trace[:n, b, :2], run.t, run) for b, (run, n) in enumerate(zip(runs, lengths))]
     return out
 
@@ -338,8 +380,8 @@ def dead_reckoning_gps(runs: list[ScooterRun]) -> list[dict[str, float]]:
 def steady_state_gain(model: ScooterModel, speed: float = 1.5, delta: float = 0.05, steps: int = 600) -> float:
     """Simulated steady-state r per unit column angle per unit speed = 1 / L_eff."""
     radius = model.gm3.config.tires[0].radius
-    state = torch.tensor([[0.0, 0.0, 0.0, speed, 0.0, 0.0, 0.0, 0.0]])
-    control = torch.tensor([[speed / radius, delta]])
+    state = torch.tensor([[0.0, 0.0, 0.0, speed, 0.0, 0.0, 0.0, 0.0]], device=model.device)
+    control = torch.tensor([[speed / radius, delta]], device=model.device)
     substeps = model.stable_substeps(speed)
     h = model.gm3.default_dt / substeps
     with torch.no_grad():
@@ -356,10 +398,10 @@ def report_errors(label: str, model_pre: ScooterModel, model_fit: ScooterModel, 
             "kinematic bicycle (const speed)": errors(kinematic_trace(windows, wheelbase, hold_speed=True), target)}
     with torch.no_grad():
         for name, model in (("GM3 preset", model_pre), ("GM3 fitted", model_fit)):
-            rows[f"{name} (vx pinned)"] = errors(model.simulate(windows, pin_vx=True).numpy(), target)
-            rows[f"{name} (open loop)"] = errors(model.simulate(windows, pin_vx=False).numpy(), target)
+            rows[f"{name} (vx pinned)"] = errors(model.simulate(windows, pin_vx=True).cpu().numpy(), target)
+            rows[f"{name} (open loop)"] = errors(model.simulate(windows, pin_vx=False).cpu().numpy(), target)
         rows["GM3 fitted (open loop, no slope)"] = errors(
-            model_fit.simulate(windows, pin_vx=False, use_slope=False).numpy(), target)
+            model_fit.simulate(windows, pin_vx=False, use_slope=False).cpu().numpy(), target)
     print(f"\n  {label}, {windows.controls.shape[1]} windows of {windows.controls.shape[0] * windows.dt:.1f} s:")
     print(f"    {'':34s} {'r RMSE':>9s} {'psi@end':>9s} {'psi p90':>9s} {'v RMSE':>8s} {'ADE':>8s} {'ADE med':>8s} {'FDE':>8s}")
     for name, row in rows.items():
@@ -372,6 +414,8 @@ def report_errors(label: str, model_pre: ScooterModel, model_fit: ScooterModel, 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fit DiffGM3 to the Hiboy scooter logs.")
     parser.add_argument("--fit", nargs="+", default=DEFAULT_FIT, choices=sorted(TRAINABLE))
+    parser.add_argument("--tire-model", default="brush", choices=sorted(TIRE_FIT),
+                        help="tire law (gm3.diffgm3.tire_models); 'cp' in --fit becomes that law's stiffness parameter")
     parser.add_argument("--horizon", type=int, default=45, help="training horizon, steps at 30 Hz")
     parser.add_argument("--eval-horizon", type=int, default=90)
     parser.add_argument("--stride", type=int, default=None)
@@ -391,6 +435,7 @@ def main() -> None:
     parser.add_argument("--tag", default="", help="suffix for the output files, e.g. the data folder")
     args = parser.parse_args()
 
+    args.fit = [TIRE_FIT[args.tire_model] if name == "cp" else name for name in args.fit]
     torch.set_default_dtype(torch.float64)
     torch.manual_seed(0)
     runs = load_all(args.root, slope_source=args.slope)
@@ -417,8 +462,8 @@ def main() -> None:
     print(f"  kinematic bar: R^2 {kinematic['r2']:.3f}, implied wheelbase {kinematic['wheelbase_implied']:.3f} m "
           f"(preset {wheelbase:.2f} m)\n")
 
-    preset = ScooterModel(dt=train_windows.dt, motor_on=args.motor_on)
-    model = ScooterModel(dt=train_windows.dt, motor_on=args.motor_on)
+    preset = ScooterModel(dt=train_windows.dt, motor_on=args.motor_on, tire_model=args.tire_model)
+    model = ScooterModel(dt=train_windows.dt, motor_on=args.motor_on, tire_model=args.tire_model)
     with torch.no_grad():
         before = float(loss_on(model, val_windows, pin_vx))
         before_train = float(loss_on(model, train_windows, pin_vx))
@@ -442,7 +487,7 @@ def main() -> None:
     fz = config.mass * config.gravity / 2.0
     for label, values in (("preset", values_pre), ("fitted", values_fit)):
         c_alpha = cornering_stiffness(values)
-        c_rear = 2.0 * values["cp_rear"] * values["contact_length_rear"] ** 2
+        c_rear = values["C_alpha_rear"]
         k_us = config.mass / wheelbase * (config.lr / c_alpha - config.lf / c_rear)
         print(f"    {label}: C_alpha front {c_alpha:.0f} N/rad ({c_alpha / fz:.1f} / rad per N of load), "
               f"rear {c_rear:.0f}; understeer gradient {math.degrees(k_us):+.3f} deg per m/s^2")
@@ -467,11 +512,11 @@ def main() -> None:
         counts.append(w.controls.shape[1])
         with torch.no_grad():
             traces = {"kinematic bicycle": kinematic_trace(w, wheelbase),
-                      "GM3 preset": preset.simulate(w, pin_vx=True).numpy(),
-                      "GM3 fitted": model.simulate(w, pin_vx=True).numpy(),
+                      "GM3 preset": preset.simulate(w, pin_vx=True).cpu().numpy(),
+                      "GM3 fitted": model.simulate(w, pin_vx=True).cpu().numpy(),
                       "KBM const speed": kinematic_trace(w, wheelbase, hold_speed=True),
-                      "GM3 fitted, no slope": model.simulate(w, pin_vx=False, use_slope=False).numpy(),
-                      "GM3 fitted, slope": model.simulate(w, pin_vx=False).numpy()}
+                      "GM3 fitted, no slope": model.simulate(w, pin_vx=False, use_slope=False).cpu().numpy(),
+                      "GM3 fitted, slope": model.simulate(w, pin_vx=False).cpu().numpy()}
         for name, trace in traces.items():
             windowed[name].append(errors(trace, w.target_states))
         star = "*" if run.name == holdout else " "
@@ -503,8 +548,8 @@ def main() -> None:
         n_coast += len(quiet)
         with torch.no_grad():
             traces = {"KBM const speed": kinematic_trace(w, wheelbase, hold_speed=True)[:, quiet],
-                      "GM3 fitted, no slope": model.simulate(w, pin_vx=False, keep=quiet, use_slope=False).numpy(),
-                      "GM3 fitted, slope": model.simulate(w, pin_vx=False, keep=quiet).numpy()}
+                      "GM3 fitted, no slope": model.simulate(w, pin_vx=False, keep=quiet, use_slope=False).cpu().numpy(),
+                      "GM3 fitted, slope": model.simulate(w, pin_vx=False, keep=quiet).cpu().numpy()}
         target = w.target_states[:, quiet]
         for name, trace in traces.items():
             coasting[name].append(np.stack([trace[1:, :, 3] - target[1:, :, 3],
@@ -528,7 +573,7 @@ def main() -> None:
         writer.writerow(["parameter", "preset", "fitted", "fitted?"])
         for name in values_fit:
             writer.writerow([name, values_pre[name], values_fit[name], name.replace("_deg", "") in args.fit])
-    summary = {"holdout": holdout, "fit": args.fit, "pin_vx": pin_vx, "slope": args.slope, "motor_on": args.motor_on,
+    summary = {"holdout": holdout, "fit": args.fit, "tire_model": args.tire_model, "pin_vx": pin_vx, "slope": args.slope, "motor_on": args.motor_on,
                "root": str(args.root), "tag": args.tag,
                "loss_before": before, "loss_after": after,
                "parameters": values_fit, "cornering_stiffness_front": cornering_stiffness(values_fit),
@@ -548,7 +593,7 @@ def main() -> None:
         tracked = args.fit[0]
         results = []
         for run in runs:
-            local = fit(ScooterModel(dt=run.dt, motor_on=args.motor_on), run.windows(args.horizon, args.stride), args.fit,
+            local = fit(ScooterModel(dt=run.dt, motor_on=args.motor_on, tire_model=args.tire_model), run.windows(args.horizon, args.stride), args.fit,
                         args.steps, args.lr, pin_vx=pin_vx, quiet=True, tie_tires=not args.free_tires)
             v = local.values()
             results.append(cornering_stiffness(v) if tracked in ("contact_length", "cp") else v[tracked if tracked != "steer_zero" else "steer_zero_deg"])
@@ -565,7 +610,7 @@ def main() -> None:
         edges = np.percentile(speed, [33, 67])
         bands = [speed <= edges[0], (speed > edges[0]) & (speed <= edges[1]), speed > edges[1]]
         for label, mask in zip(("slow", "mid", "fast"), bands):
-            local = fit(ScooterModel(dt=train_windows.dt, motor_on=args.motor_on), train_windows, args.fit, args.steps, args.lr,
+            local = fit(ScooterModel(dt=train_windows.dt, motor_on=args.motor_on, tire_model=args.tire_model), train_windows, args.fit, args.steps, args.lr,
                         pin_vx=pin_vx, keep=np.flatnonzero(mask), quiet=True, tie_tires=not args.free_tires)
             v = local.values()
             print(f"    {label:5s} (v ~ {speed[mask].mean():.2f} m/s, n={mask.sum()})  C_alpha={cornering_stiffness(v):7.0f}  "

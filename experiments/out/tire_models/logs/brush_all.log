@@ -1,0 +1,1 @@
+[brush_all] 26 runs, 789 training windows of 1.5 s, held out nothing, fitting ['cp', 'yaw_inertia', 'yaw_damping', 'steer_zero'], 150 steps

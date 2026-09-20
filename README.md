@@ -281,6 +281,50 @@ zero.
 Obstacle geometry is fixed in world coordinates, so the vehicle has to be driven
 over it. Omitting `obstacle` recovers the flat-ground dynamics exactly.
 
+## Tire Models
+
+`DiffGM3` takes a `tire_model`. The default, `"brush"`, is the original GM3 brush tire and is
+bit-for-bit what it was; the other four are the comparison laws from `gm3-models`, ported into
+`gm3.diffgm3.tire_models` with their formulations and smoothing unchanged.
+
+| name | force law | tire parameters |
+|---|---|---|
+| `brush` | GM3 brush with spin and aligning moment | `TireConfig` `mu`, `cp`, `contact_length`; no tire kwargs |
+| `fiala` | critical-slip `Fx`, cubic `Fy` with residual lateral capacity | `cx`, `cy`, `mu` |
+| `dugoff` | combined-slip Dugoff, divisor 2 | `cx`, `cy`, `mu` |
+| `burckhardt` | `c1 (1 - exp(-c2 s)) - c3 s` at resultant slip, resolved along the slip direction | `road` or `coefficients_x` / `coefficients_y`; `match_framework_mu` |
+| `pacejka` | B-C-D-E Magic Formula with a radial friction projection | `cx`, `cy`, `mu`, `shape_x/y`, `curvature_x/y` |
+
+```python
+from gm3.diffgm3 import DiffGM3, TIRE_MODELS
+
+model = DiffGM3(cfg, dt=0.005, tire_model="fiala", cy=2000.0, trainable_stiffness=True)
+wet = DiffGM3(cfg, tire_model="burckhardt", road="wet_asphalt")
+mf = DiffGM3(cfg, tire_model="pacejka", cy=[1800.0, 2100.0], shape_y=1.4, trainable_shape=True)
+
+print(model.cornering_stiffness())                 # -dFy/dalpha per tire at zero slip, any law
+print(model.physical_parameters(detach=True))      # framework values plus "tire.*"
+```
+
+Aliases `magic_formula` and `gm3_brush` work, and a `TireModel` module can be passed instead of
+a name. `cx` / `cy` default to `2 * cp * contact_length**2` per tire. Nothing model-specific is
+trainable unless asked for: `trainable_stiffness` (fiala, dugoff, pacejka),
+`trainable_shape` (pacejka C and E) and `trainable_coefficients` (Burckhardt, which has no
+stiffness: its zero-slip slope is `(c1*c2 - c3) * Fz`). Framework parameters a law does not
+read (`cp`, `contact_length`, `align_gain`, and `mu` for absolute-friction Burckhardt) are
+frozen. The four comparison laws return `Mz = 0`.
+
+Two differences from `gm3-models`: stiffness is log-parametrized between `STIFFNESS_BOUNDS`
+rather than softplus (the same reason `cp` is, so old `raw_cx` / `raw_cy` checkpoints do not
+load), and the comparison laws see the same `kappa` and `alpha` as the brush. Pass
+`speed_epsilon=0.5` for that repo's `sqrt(vx**2 + speed_epsilon**2)` slip instead; with it the
+two implementations agree to 1e-14 on the four comparison laws. The non-differentiable `GM3` backend still has
+the brush tire only.
+
+The published road coefficients make a stiff tire (about `30 * Fz` per radian on dry asphalt),
+and so do realistic `cy` values: explicit Euler at the default `dt` then oscillates, see
+CALIBRATION.md. Use a small `dt` or substep `derivative`.
+
 ## Training Physical Parameters
 
 `DiffGM3` is an `nn.Module`, so train with normal PyTorch optimizers.

@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from gm3.diffgm3.enveloping import enveloping_wheel_forces
 from gm3.diffgm3.tire import body_to_tire_velocities, brush_forces, slip
+from gm3.diffgm3.tire_models import BrushTire, BurckhardtTire, StiffnessTire, TireInputs, TireModel, make_tire
 from gm3.diffgm3.torch_utils import bounded, log_bounded, raw_bounded, raw_log_bounded, raw_positive
 from gm3.shared.constants import ALIGN_GAIN_BOUNDS, CONTACT_LENGTH_BOUNDS, CP_BOUNDS, MU_BOUNDS
 from gm3.shared.enveloping import calibrate_enveloping
@@ -17,10 +18,20 @@ from gm3.shared.types import VehicleConfig
 class DiffGM3Vehicle(nn.Module):
     """Torch vehicle core with trainable GM3 physical parameters."""
 
-    def __init__(self, config: VehicleConfig, dt: float = 0.05):
+    def __init__(
+        self,
+        config: VehicleConfig,
+        dt: float = 0.05,
+        *,
+        tire_model: str | TireModel = "brush",
+        speed_epsilon: float | None = None,
+        **tire_options: Any,
+    ):
         super().__init__()
         if dt <= 0:
             raise ValueError("dt must be positive")
+        if speed_epsilon is not None and speed_epsilon <= 0:
+            raise ValueError("speed_epsilon must be positive")
 
         self.config = config
         self.steering_mode = config.steering_mode
@@ -109,6 +120,31 @@ class DiffGM3Vehicle(nn.Module):
         self.raw_yaw_damping = nn.Parameter(raw_positive(config.yaw_damping, minimum=1e-6))
         self.raw_roll_damping = nn.Parameter(raw_positive(config.roll_damping, minimum=1e-6))
 
+        # Tire law. "brush" is the original GM3 tire and takes the direct path in
+        # _derivative_and_aux; the others come from gm3.diffgm3.tire_models.
+        if isinstance(tire_model, str):
+            tire_model = make_tire(tire_model, config, **tire_options)
+        elif tire_options:
+            raise ValueError("configure custom tire modules before passing them")
+        if not isinstance(tire_model, TireModel):
+            raise TypeError("tire_model must be a name or a TireModel module")
+        self.tire_model = tire_model
+        self._brush = isinstance(tire_model, BrushTire)
+        # speed_epsilon switches the comparison laws to the gm3-models slip,
+        # (r * omega - vx) / sqrt(vx^2 + speed_epsilon^2) with no clamping, for
+        # parity with that repo. Left at None they see the same kappa and alpha
+        # as the brush, so a calibration compares tire laws and nothing else.
+        self.speed_epsilon = speed_epsilon
+        if not self._brush:
+            # Parameters the law does not read would otherwise sit in an
+            # optimizer collecting zero gradients.
+            self.raw_cp.requires_grad_(False)
+            self.raw_contact_length.requires_grad_(False)
+            if isinstance(tire_model, StiffnessTire):
+                self.raw_align_gain.requires_grad_(False)
+            if isinstance(tire_model, BurckhardtTire) and not tire_model.match_framework_mu:
+                self.raw_mu.requires_grad_(False)
+
     def physical_parameters(self, *, detach: bool = False) -> dict[str, torch.Tensor]:
         params = {
             "mu": bounded(self.raw_mu, *MU_BOUNDS),
@@ -120,8 +156,11 @@ class DiffGM3Vehicle(nn.Module):
             "yaw_damping": F.softplus(self.raw_yaw_damping) + 1e-6,
             "roll_damping": F.softplus(self.raw_roll_damping) + 1e-6,
         }
+        if not self._brush and hasattr(self.tire_model, "physical_parameters"):
+            params.update({f"tire.{name}": value for name, value in self.tire_model.physical_parameters().items()})
         if detach:
-            return {name: value.detach() for name, value in params.items()}
+            return {name: value.detach() if isinstance(value, torch.Tensor) else value
+                    for name, value in params.items()}
         return params
 
     def forward(
@@ -324,14 +363,16 @@ class DiffGM3Vehicle(nn.Module):
         omega_by_tire = omega[..., self.driven_slot]
         omega_tire = torch.where(self.driven_mask_row, omega_by_tire, free_roll_omega)
 
-        sigma_x, sigma_y, kappa, alpha = slip(
+        sigma_x, sigma_y, kappa, alpha = self._slip(
             vx_tire=vx_tire,
             vy_tire=vy_tire,
             omega_tire=omega_tire,
             tire_radius=self.tire_radius,
             eps=self.eps,
         )
-        fx_tire, fy_tire, mz_tire = brush_forces(
+        fx_tire, fy_tire, mz_tire = self._tire_forces(
+            longitudinal_speed=vx_tire,
+            kappa=kappa,
             sigma_x=sigma_x,
             sigma_y=sigma_y,
             normal_loads=normal_loads,
@@ -410,6 +451,54 @@ class DiffGM3Vehicle(nn.Module):
                 aux["enveloping_drag"] = fd_total
                 aux["enveloping_drag_moment"] = mz_drag
         return derivative, aux
+
+    def _slip(self, **kwargs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._brush or self.speed_epsilon is None:
+            return slip(**kwargs)
+        vx, vy = kwargs["vx_tire"], kwargs["vy_tire"]
+        denominator = torch.sqrt(vx.square() + self.speed_epsilon ** 2)
+        kappa = (kwargs["tire_radius"] * kwargs["omega_tire"] - vx) / denominator
+        if bool((kappa <= -1).any()):
+            raise ValueError("comparison tire models require kappa > -1; reverse wheel commands are outside their domain")
+        alpha = torch.atan2(vy, denominator)
+        # Informational physical slips: stable at wheel lock, no hard clipping.
+        rolling = torch.sqrt((1.0 + kappa).square() + 1e-8)
+        return -kappa / rolling, torch.tan(alpha) / rolling, kappa, alpha
+
+    def _tire_forces(self, *, kappa: torch.Tensor, longitudinal_speed: torch.Tensor,
+                     mu: torch.Tensor, cp: torch.Tensor, contact_length: torch.Tensor,
+                     **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._brush:
+            return brush_forces(mu=mu, cp=cp, contact_length=contact_length, **kwargs)
+        inputs = TireInputs(kappa=kappa, longitudinal_speed=longitudinal_speed, **kwargs)
+        return self.tire_model(inputs, {"mu": mu, "cp": cp, "contact_length": contact_length})
+
+    def cornering_stiffness(self, normal_loads: torch.Tensor | None = None, *, alpha: float = 1e-4) -> torch.Tensor:
+        """Zero-slip cornering stiffness ``-dFy/dalpha`` per tire, N/rad.
+
+        Read off the tire law itself (a secant over ``alpha``, free-rolling, no
+        lean, no steer) so it means the same thing for every law: ``2 cp a^2``
+        for the brush, ``cy`` for Fiala, Dugoff and Pacejka, and
+        ``(c1 c2 - c3) Fz`` for Burckhardt. Defaults to the static loads.
+        """
+        if normal_loads is None:
+            wheelbase = self.wheelbase.clamp_min(self.eps)
+            front = self.mass * self.gravity * self.lr / wheelbase / self.front_count
+            rear = self.mass * self.gravity * self.lf / wheelbase / self.rear_count
+            normal_loads = torch.where(self.front_mask, front, rear)
+        loads = normal_loads.reshape(1, self.n_tires)
+        zeros = torch.zeros_like(loads)
+        slip_angle = zeros + alpha
+        params = self.physical_parameters()
+        _, fy, _ = self._tire_forces(
+            longitudinal_speed=zeros + 1.0, kappa=zeros, sigma_x=zeros, sigma_y=torch.tan(slip_angle),
+            normal_loads=loads, alpha=slip_angle, steering_angles=zeros, gamma=zeros[:, 0],
+            tire_radius=self.tire_radius, wheelbase=self.wheelbase, eps=self.eps,
+            min_normal_load=self.min_normal_load, lean_mask=self.lean_mask,
+            has_leaning_tires=self._has_leaning_tires,
+            mu=params["mu"], cp=params["cp"], contact_length=params["contact_length"],
+        )
+        return -fy[0] / alpha
 
     def _normal_loads(
         self,

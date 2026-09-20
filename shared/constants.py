@@ -10,6 +10,7 @@ DEFAULT_MIN_NORMAL_LOAD = 1e-3
 MU_BOUNDS = (0.05, 3.0)
 CP_BOUNDS = (1.0, 100_000_000.0)   # log-parametrized in DiffGM3, see torch_utils
 CONTACT_LENGTH_BOUNDS = (1e-4, 1.0)
+STIFFNESS_BOUNDS = (1.0, 10_000_000.0)   # cx / cy of the comparison tire laws, N per unit slip; log-parametrized
 ALIGN_GAIN_BOUNDS = (0.0, 2.0)
 
 SLIP_EPS = 1e-3

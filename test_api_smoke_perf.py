@@ -269,5 +269,61 @@ class DiffGM3ApiSmokePerfTests(unittest.TestCase):
                 print(f"[DiffGM3 {label}] batch={batch}, horizon={horizon} rollout: {elapsed * 1000.0:.2f} ms")
 
 
+    def test_diffgm3_tire_models_rollout_backward(self) -> None:
+        from gm3.diffgm3 import TIRE_MODELS
+
+        cfg = make_bicycle_config()
+        # Burckhardt's road table is a ~12,000 N/rad tire on this bicycle, which
+        # explicit Euler cannot integrate at the usual 0.02 s (it flips sign).
+        batch, horizon, dt = 4, 64, 0.002
+        initial = torch.zeros(batch, 8, dtype=torch.float64)
+        initial[:, 3] = torch.linspace(1.8, 2.6, batch)
+        controls = torch.zeros(horizon, batch, 2, dtype=torch.float64)
+        controls[..., 0] = 1.05 * initial[:, 3].view(1, batch) / cfg.tires[1].radius
+        controls[..., 1] = 0.05
+        # What each law's lateral force must be sensitive to once it is freed.
+        options = {
+            "brush": ({}, "raw_cp"),
+            "fiala": ({"trainable_stiffness": True}, "tire_model.raw_cy"),
+            "dugoff": ({"trainable_stiffness": True}, "tire_model.raw_cy"),
+            "pacejka": ({"trainable_stiffness": True, "trainable_shape": True}, "tire_model.raw_shape_y"),
+            "burckhardt": ({"trainable_coefficients": True}, "tire_model.log_coefficients_y"),
+        }
+        self.assertEqual(set(options), set(TIRE_MODELS))
+        default = DiffGM3(cfg, dt=dt).double().rollout(initial, controls)
+        for name, (kwargs, parameter) in options.items():
+            with self.subTest(tire_model=name):
+                model = DiffGM3(cfg, dt=dt, tire_model=name, **kwargs).double()
+                states = model.rollout(initial, controls)
+                self.assertEqual(tuple(states.shape), (horizon + 1, batch, 8))
+                self.assertTrue(torch.isfinite(states).all().item())
+                if name == "brush":
+                    self.assertTrue(torch.equal(states, default))
+                # Turning left under a positive steer, whatever the law.
+                self.assertTrue((states[-1, :, 5] > 0).all().item())
+                states[..., :6].square().mean().backward()
+                grad = dict(model.named_parameters())[parameter].grad
+                self.assertIsNotNone(grad, parameter)
+                self.assertTrue(torch.isfinite(grad).all().item() and bool(grad.abs().sum() > 0), parameter)
+                stiffness = model.cornering_stiffness()
+                self.assertEqual(tuple(stiffness.shape), (len(cfg.tires),))
+                self.assertTrue((stiffness > 0).all().item())
+
+    def test_diffgm3_tire_model_stiffness_matches_config(self) -> None:
+        cfg = make_bicycle_config()
+        expected = torch.tensor([2.0 * t.cp * t.contact_length ** 2 for t in cfg.tires], dtype=torch.float64)
+        for name in ("fiala", "dugoff", "pacejka"):
+            with self.subTest(tire_model=name):
+                model = DiffGM3(cfg, tire_model=name).double()
+                self.assertTrue(torch.allclose(model.cornering_stiffness(), expected, rtol=1e-3))
+                custom = DiffGM3(cfg, tire_model=name, cy=[900.0, 1100.0]).double()
+                self.assertTrue(torch.allclose(custom.physical_parameters()["tire.cy"],
+                                               torch.tensor([900.0, 1100.0], dtype=torch.float64)))
+        with self.assertRaises(ValueError):
+            DiffGM3(cfg, tire_model="not-a-tire")
+        with self.assertRaises(ValueError):
+            DiffGM3(cfg, tire_model="brush", cy=1000.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
