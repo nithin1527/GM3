@@ -1,0 +1,8 @@
+[fiala] C_alpha      1000  train 3.9820e-02  held-out 2.7953e-02
+[fiala] C_alpha      2000  train 2.9915e-02  held-out 1.8903e-02
+[fiala] C_alpha      4500  train 2.6285e-02  held-out 1.5491e-02
+[fiala] C_alpha      7000  train 2.5729e-02  held-out 1.4894e-02
+[fiala] C_alpha     10000  train 2.5531e-02  held-out 1.4652e-02
+[fiala] C_alpha     15000  train 2.5426e-02  held-out 1.4504e-02
+[fiala] C_alpha     20000  train 2.5391e-02  held-out 1.4444e-02
+[fiala] C_alpha     30000  train 2.5370e-02  held-out 1.4394e-02

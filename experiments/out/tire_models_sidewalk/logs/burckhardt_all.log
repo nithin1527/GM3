@@ -1,0 +1,8 @@
+[burckhardt_all] 20 runs, 617 training windows of 1.5 s, held out nothing, fitting ['burckhardt_c2', 'yaw_inertia', 'yaw_damping', 'steer_zero'], 150 steps
+    step    0  loss=2.5182e-02  cp= 3.600e+06  C_alpha=   4545 N/rad  Jz=7.990  c_r=0.496  zero=+0.01 deg
+    step   30  loss=2.4460e-02  cp= 3.600e+06  C_alpha=   6080 N/rad  Jz=7.711  c_r=0.397  zero=+0.06 deg
+    step   60  loss=2.4163e-02  cp= 3.600e+06  C_alpha=   7572 N/rad  Jz=7.494  c_r=0.337  zero=+0.06 deg
+    step   90  loss=2.4018e-02  cp= 3.600e+06  C_alpha=   8926 N/rad  Jz=7.319  c_r=0.299  zero=+0.06 deg
+    step  120  loss=2.3933e-02  cp= 3.600e+06  C_alpha=  10189 N/rad  Jz=7.161  c_r=0.273  zero=+0.06 deg
+    step  149  loss=2.3879e-02  cp= 3.600e+06  C_alpha=  11350 N/rad  Jz=7.015  c_r=0.254  zero=+0.05 deg
+[burckhardt_all] 18.9 min; loss train 2.5153e-02 -> 2.3877e-02, all 2.5153e-02 -> 2.3877e-02; C_alpha 11350

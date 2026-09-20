@@ -1,0 +1,8 @@
+[burckhardt] C_alpha      1000  train 4.2474e-02  held-out 3.0818e-02
+[burckhardt] C_alpha      2000  train 3.0721e-02  held-out 1.9903e-02
+[burckhardt] C_alpha      4500  train 2.6453e-02  held-out 1.5767e-02
+[burckhardt] C_alpha      7000  train 2.5784e-02  held-out 1.5023e-02
+[burckhardt] C_alpha     10000  train 2.5544e-02  held-out 1.4719e-02
+[burckhardt] C_alpha     15000  train 2.5417e-02  held-out 1.4534e-02
+[burckhardt] C_alpha     20000  train 2.5373e-02  held-out 1.4458e-02
+[burckhardt] C_alpha     30000  train 2.5341e-02  held-out 1.4391e-02

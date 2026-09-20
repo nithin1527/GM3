@@ -1,0 +1,8 @@
+[pacejka] C_alpha      1000  train 3.8093e-02  held-out 2.6364e-02
+[pacejka] C_alpha      2000  train 2.9190e-02  held-out 1.8259e-02
+[pacejka] C_alpha      4500  train 2.6101e-02  held-out 1.5316e-02
+[pacejka] C_alpha      7000  train 2.5651e-02  held-out 1.4809e-02
+[pacejka] C_alpha     10000  train 2.5491e-02  held-out 1.4605e-02
+[pacejka] C_alpha     15000  train 2.5408e-02  held-out 1.4479e-02
+[pacejka] C_alpha     20000  train 2.5381e-02  held-out 1.4428e-02
+[pacejka] C_alpha     30000  train 2.5366e-02  held-out 1.4385e-02

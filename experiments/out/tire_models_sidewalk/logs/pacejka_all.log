@@ -1,0 +1,8 @@
+[pacejka_all] 20 runs, 617 training windows of 1.5 s, held out nothing, fitting ['cy', 'yaw_inertia', 'yaw_damping', 'steer_zero'], 150 steps
+    step    0  loss=2.4717e-02  cp= 3.600e+06  C_alpha=   4685 N/rad  Jz=7.990  c_r=0.496  zero=+0.01 deg
+    step   30  loss=2.3865e-02  cp= 3.600e+06  C_alpha=  11665 N/rad  Jz=7.746  c_r=0.410  zero=+0.05 deg
+    step   60  loss=2.3785e-02  cp= 3.600e+06  C_alpha=  17063 N/rad  Jz=7.575  c_r=0.371  zero=+0.05 deg
+    step   90  loss=2.3759e-02  cp= 3.600e+06  C_alpha=  20940 N/rad  Jz=7.410  c_r=0.346  zero=+0.04 deg
+    step  120  loss=2.3745e-02  cp= 3.600e+06  C_alpha=  24162 N/rad  Jz=7.238  c_r=0.324  zero=+0.04 deg
+    step  149  loss=2.3735e-02  cp= 3.600e+06  C_alpha=  26842 N/rad  Jz=7.064  c_r=0.305  zero=+0.04 deg
+[pacejka_all] 21.2 min; loss train 2.4694e-02 -> 2.3734e-02, all 2.4694e-02 -> 2.3734e-02; C_alpha 26842

@@ -1,0 +1,8 @@
+[dugoff] C_alpha      1000  train 3.7365e-02  held-out 2.5776e-02
+[dugoff] C_alpha      2000  train 2.8879e-02  held-out 1.8024e-02
+[dugoff] C_alpha      4500  train 2.6025e-02  held-out 1.5247e-02
+[dugoff] C_alpha      7000  train 2.5621e-02  held-out 1.4777e-02
+[dugoff] C_alpha     10000  train 2.5481e-02  held-out 1.4588e-02
+[dugoff] C_alpha     15000  train 2.5409e-02  held-out 1.4474e-02
+[dugoff] C_alpha     20000  train 2.5387e-02  held-out 1.4428e-02
+[dugoff] C_alpha     30000  train 2.5375e-02  held-out 1.4389e-02

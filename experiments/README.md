@@ -33,7 +33,12 @@ package if it is not already importable under that name.
   out), `fit --all-data` (the reported parameters), `fit --all-data --free all`
   (friction and shape freed too), `profile` (loss along the stiffness axis) and
   `report` (parameter and accuracy tables, `out/tire_models/report.md`).
-  `scooter_calibrate --tire-model` runs the single-folder workflow on any law.
+  `scooter_calibrate --tire-model` runs the single-folder workflow on any law. `--surfaces kim_quad slope_sidewalk`
+  pools a subset of the folders and writes to `out/tire_models_<surfaces>/`.
+- `scooter_tire_model_plots.py` - parameter tables (`parameters.md`, `parameters.csv`) and plots for whatever
+  `scooter_tire_models` has fitted: fitted force curves against the recorded load range, held-out accuracy per
+  law, per-run GPS error, stiffness profile, parameter comparison, held-out traces and paths. Takes the same
+  `--surfaces`; `--only` redraws a subset.
 - `scooter_plots.py` - renders the fitted GM3 against the kinematic bicycle on
   every run (paths vs GPS with the start marked, held-out yaw rate and heading
   error, per-run error bars, residual by steering angle) into `out/plots/`.

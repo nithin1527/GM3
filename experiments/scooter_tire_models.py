@@ -7,7 +7,10 @@
 
 One set of parameters per tire law (brush, fiala, dugoff, burckhardt,
 pacejka), fitted on the three ``data/*_corrected`` folders pooled: concrete
-(kim quad), asphalt (AV Williams lot) and the sloped sidewalk. The protocol is
+(kim quad), asphalt (AV Williams lot) and the sloped sidewalk. ``--surfaces``
+picks a subset (``--surfaces kim_quad slope_sidewalk``); the outputs then go
+to ``out/tire_models_<surfaces>/`` so the pooled and subset fits can coexist.
+The protocol is
 ``scooter_calibrate``'s, unchanged, so the brush row is comparable with
 CALIBRATION.md: 1.5 s windows, vx pinned to the wheel speed, both wheels
 free-rolling, IMU slope input, variance-normalized yaw-rate + heading loss,
@@ -47,10 +50,13 @@ from gm3.diffgm3.tire_models import BURCKHARDT_ROADS
 from gm3.shared import make_scooter_config
 
 DATA = Path(__file__).resolve().parents[1] / "data"
-OUT = Path(__file__).resolve().parent / "out" / "tire_models"
+OUT = Path(__file__).resolve().parent / "out" / "tire_models"   # reassigned per --surfaces in main()
 SURFACES = {"concrete": "scooter_data_kim_quad_corrected",
             "asphalt": "scooter_data_av_williams_lot_corrected",
             "sloped sidewalk": "scooter_data_slope_sidewalk_corrected"}
+# --surfaces takes the data-folder slugs.
+SURFACE_SLUGS = {folder.replace("scooter_data_", "").replace("_corrected", ""): surface
+                 for surface, folder in SURFACES.items()}
 MODELS = ("brush", "fiala", "dugoff", "burckhardt", "pacejka")
 SHARED_FIT = ["yaw_inertia", "yaw_damping", "steer_zero"]
 # What --free all adds to the stiffness parameter: everything else the law's lateral force reads.
@@ -58,8 +64,23 @@ SHAPE_FIT = {"brush": ["mu"], "fiala": ["mu"], "dugoff": ["mu"], "pacejka": ["mu
              "burckhardt": ["burckhardt_y"]}
 
 
-def load_surfaces(slope: str = "imu") -> dict[str, list[ScooterRun]]:
-    return {surface: load_all(DATA / folder, slope_source=slope) for surface, folder in SURFACES.items()}
+def select_surfaces(slugs: list[str] | None) -> dict[str, str]:
+    """``SURFACES`` restricted to the ``--surfaces`` slugs, in table order."""
+    if not slugs:
+        return dict(SURFACES)
+    chosen = {SURFACE_SLUGS[slug] for slug in slugs}
+    return {surface: folder for surface, folder in SURFACES.items() if surface in chosen}
+
+
+def output_dir(slugs: list[str] | None) -> Path:
+    base = Path(__file__).resolve().parent / "out"
+    if not slugs or set(slugs) == set(SURFACE_SLUGS):
+        return base / "tire_models"
+    return base / ("tire_models_" + "_".join(slug for slug in SURFACE_SLUGS if slug in set(slugs)))
+
+
+def load_surfaces(slope: str = "imu", slugs: list[str] | None = None) -> dict[str, list[ScooterRun]]:
+    return {surface: load_all(DATA / folder, slope_source=slope) for surface, folder in select_surfaces(slugs).items()}
 
 
 def prepare(model: ScooterModel, device: str, compile_model: bool) -> ScooterModel:
@@ -135,20 +156,27 @@ def evaluate(model: ScooterModel | None, surfaces: dict[str, list[ScooterRun]], 
         out["windows"][label] = {**errors(trace(windows), windows.target_states), "n": int(windows.controls.shape[1])}
 
     every = [r for runs in surfaces.values() for r in runs]
+    surface_of = {run.name: surface for surface, runs in surfaces.items() for run in runs}
     table = gps_table({"m": model}, every, wheelbase)["m"]
     out["gps"]["all"] = {**pooled_gps(table),
-                         "runs": {run.name: {"ADE": row["ADE"], "frechet": row["frechet"], "n": row["n"]}
+                         "runs": {run.name: {"ADE": row["ADE"], "frechet": row["frechet"], "n": row["n"],
+                                             "surface": surface_of[run.name]}
                                   for run, row in zip(every, table)}}
     gps_held = [row for run, row in zip(every, table) if run.name in holdouts]
     if gps_held:
         out["gps"]["held-out"] = pooled_gps(gps_held)
+    if len(surfaces) > 1:
+        for surface in surfaces:
+            rows = [row for run, row in zip(every, table) if surface_of[run.name] == surface]
+            if rows:
+                out["gps"][surface] = pooled_gps(rows)
     if model is not None:
         out["steady_state_gain"] = steady_state_gain(model)
     return out
 
 
 def command_fit(args: argparse.Namespace) -> None:
-    surfaces = load_surfaces(args.slope)
+    surfaces = load_surfaces(args.slope, args.surfaces)
     holdouts = set() if args.all_data else {runs[-1].name for runs in surfaces.values()}
     every = [run for runs in surfaces.values() for run in runs]
     train = windows_of([run for run in every if run.name not in holdouts], args.horizon)
@@ -167,6 +195,7 @@ def command_fit(args: argparse.Namespace) -> None:
 
     OUT.mkdir(parents=True, exist_ok=True)
     summary = {"model": args.model, "all_data": args.all_data, "free": args.free, "fit": names,
+               "surfaces": {surface: [run.name for run in runs] for surface, runs in surfaces.items()},
                "holdouts": sorted(holdouts), "steps": args.steps, "lr": args.lr, "fit_seconds": seconds,
                "training_windows": int(train.controls.shape[1]),
                "kinematic_gain": abs(kinematic_steer_fit(every)["gain"]),
@@ -182,7 +211,7 @@ def command_fit(args: argparse.Namespace) -> None:
 
 def command_profile(args: argparse.Namespace) -> None:
     """Loss along the cornering-stiffness axis with everything else at the fit."""
-    surfaces = load_surfaces(args.slope)
+    surfaces = load_surfaces(args.slope, args.surfaces)
     holdouts = {runs[-1].name for runs in surfaces.values()}
     every = [run for runs in surfaces.values() for run in runs]
     groups = {"train": windows_of([r for r in every if r.name not in holdouts], args.horizon),
@@ -281,7 +310,11 @@ def command_report(args: argparse.Namespace) -> None:
     free = load_summaries("_all_free")
     lines: list[str] = []
     if everything:
-        lines += ["## Parameters, fitted on all 26 corrected runs (bold = fitted)", ""] + parameter_table(everything) + [""]
+        first = next(iter(everything.values()))
+        runs = sum(len(names) for names in first.get("surfaces", {}).values()) or 26
+        surfaces = ", ".join(first.get("surfaces", {})) or "all surfaces"
+        lines += [f"## Parameters, fitted on all {runs} corrected runs ({surfaces}; bold = fitted)", ""]
+        lines += parameter_table(everything) + [""]
     if free:
         lines += ["## Sensitivity: friction and shape parameters freed as well", ""] + parameter_table(free) + [""]
     if held:
@@ -289,6 +322,17 @@ def command_report(args: argparse.Namespace) -> None:
         lines += [f"## Accuracy on the held-out runs ({', '.join(n['holdouts'])})", ""]
         lines += accuracy_table(held, "held-out", "held-out") + [""]
         lines += ["## Accuracy on the training runs of the same fits", ""] + accuracy_table(held, "train", "all") + [""]
+        surfaces = [s for s in n["fitted"]["gps"] if s not in ("all", "held-out")]
+        if surfaces:
+            lines += ["## Whole-run GPS ADE / Frechet (m) by surface, held-out fits, every run", "",
+                      "| model | " + " | ".join(surfaces) + " | all |", "|---|" + "---|" * (len(surfaces) + 1)]
+            rows = [("kinematic bicycle", n["kinematic"]), ("brush preset", held["brush"]["preset"])] if "brush" in held \
+                else [("kinematic bicycle", n["kinematic"])]
+            rows += [(f"{name} fitted", s["fitted"]) for name, s in held.items()]
+            for label, result in rows:
+                lines.append(f"| {label} | " + " | ".join(f"{result['gps'][s]['ADE']:.3f} / {result['gps'][s]['frechet']:.3f}"
+                                                          for s in surfaces + ["all"]) + " |")
+            lines.append("")
         lines += ["## Generalization and parameter stability", "",
                   "| model | train loss preset -> fitted | held-out loss preset -> fitted | C_alpha held-out fit / all-data fit | "
                   "Jz | yaw gain ratio | fit time (min) |", "|---|---|---|---|---|---|---|"]
@@ -338,8 +382,13 @@ def main() -> None:
     sub.choices["profile"].add_argument("--values", type=float, nargs="+",
                                         default=[1000, 2000, 4500, 7000, 10000, 15000, 20000, 30000])
     sub.add_parser("report")
+    for p in sub.choices.values():
+        p.add_argument("--surfaces", nargs="+", default=None, choices=sorted(SURFACE_SLUGS),
+                       help="data folders to pool (default: all three); outputs go to out/tire_models_<surfaces>/")
     args = parser.parse_args()
 
+    global OUT
+    OUT = output_dir(args.surfaces)
     torch.set_default_dtype(torch.float64)
     torch.manual_seed(0)
     if getattr(args, "threads", None):
